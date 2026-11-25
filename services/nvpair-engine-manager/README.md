@@ -316,6 +316,8 @@ Requests (caller → service):
 | `engine:describe` | `{ engine }` | the engine's manifest |
 | `engine:status` | `{ engine, port? }` | `EngineStatus`; an error for an engine this host cannot run |
 | `engine:install` | `{ engine, start?, port?, bind? }` | `EngineStatus` (after install; also starts it if `start:true`) |
+| `engine:check-updates` | `{ engine }` | `{ updateAvailable: null }` or `{ updateAvailable: { currentVersion, latestVersion, releaseUrl, installType, downloadUrl? } }` for the local engine. `releaseUrl` links to release information. `installType` is `managed` or `external`. External offers include the vendor's `downloadUrl`. Failed lookups return an RPC error. |
+| `engine:update` | `{ engine }` | `EngineStatus` after updating the PAIR-managed installation. Preserves the prior running or stopped state. |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
 | `engine:uninstall-managed` | — | `{ engines: [{ engine, removed, error? }] }` — removes every engine this service installed, selected by its install marker, each through the `engine:uninstall` path. Backs "reset all data" in both clients; downloaded models are kept. Neither `removed` nor `error` means the engine was left alone as not ours |
 | `engine:start` | `{ engine, port?, bind? }` | `EngineStatus` (after readiness) |
@@ -453,7 +455,7 @@ accumulated CLI output. The limit applies per frame so a long operation can
 report progress throughout its lifetime. They fail if this node isn't clustered
 or the target isn't a pinned cluster peer. See "Remote engine management" below.
 
-`engine:install`, `engine:start`, `engine:stop`, `engine:restart`,
+`engine:check-updates`, `engine:update`, `engine:install`, `engine:start`, `engine:stop`, `engine:restart`,
 `engine:set-port`, and `engine:action` run in their own goroutine on the
 service side, so the read loop never blocks and their responses arrive when
 the op finishes.

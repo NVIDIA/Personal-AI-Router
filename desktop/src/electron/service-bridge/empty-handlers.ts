@@ -240,15 +240,21 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
     // Use the engine-manager's stable error key. If the manager already reported
     // the operation failure, nvpair-errors upserts this fallback instead of showing
     // a duplicate; admission/transport failures still get a visible error.
-    const failPendingOp = (action: string, operation: 'install' | 'uninstall') => {
+    const failPendingOp = (operation: 'install' | 'uninstall' | 'update') => {
         return (error: string): void => {
             state.clearPendingEngineOp(payload.engineType)
-            supervisor.reportError(`Failed to ${action} ${engine}: ${error}`, 'error', undefined, {
-                id: `engine-manager:${operation}-failed:${engine}`,
-                engineType: engine,
-                operation,
-                action: 'retry'
-            })
+            supervisor.reportError(
+                `Failed to ${operation} ${engine}: ${error}`,
+                'error',
+                undefined,
+                {
+                    id: `engine-manager:${operation}-failed:${engine}`,
+                    nodeId: payload.nodeId,
+                    engineType: payload.engineType,
+                    operation,
+                    action: 'retry'
+                }
+            )
         }
     }
     const failAction =
@@ -273,7 +279,7 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                 'broker',
                 'engine:install',
                 { engine, start: true },
-                failPendingOp('install', 'install'),
+                failPendingOp('install'),
                 true
             )
             break
@@ -283,28 +289,25 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                 'broker',
                 'engine:uninstall',
                 { engine },
-                failPendingOp('uninstall', 'uninstall'),
+                failPendingOp('uninstall'),
                 true
             )
             break
         case 'update':
-            // The engine-manager serializes per-engine ops via its lifecycle
-            // lock, so the queued install waits for the uninstall to finish. The
-            // uninstall's engine:state-changed briefly clears this, then the
-            // install's progress re-establishes `installing`.
+            if (!payload.nodeId || payload.nodeId !== state.getSelfId()) {
+                supervisor.reportError(
+                    'Engine updates are available on the local node.',
+                    'warning',
+                    'engine-cmd:update'
+                )
+                break
+            }
             state.beginLocalEngineOp(payload.engineType, 'installing')
             supervisor.sendProcess(
                 'broker',
-                'engine:uninstall',
+                'engine:update',
                 { engine },
-                failPendingOp('update', 'uninstall'),
-                true
-            )
-            supervisor.sendProcess(
-                'broker',
-                'engine:install',
-                { engine, start: true },
-                failPendingOp('update', 'install'),
+                failPendingOp('update'),
                 true
             )
             break

@@ -433,10 +433,13 @@ func TestBroker_DoesNotExposeInternalReservationSetter(t *testing.T) {
 func TestNeedsOllamaPortGate_IdentifiesRequestsRequiringStablePort(t *testing.T) {
 	test := func(name, method, params string, want bool) {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, want, needsOllamaPortGate(method, []byte(params)))
+			assert.Equal(t, want, needsEnginePortGate("ollama", method, []byte(params)))
 		})
 	}
 	test("inventory waits", "engine:get-installed", `{}`, true)
+	test("Ollama update check waits", "engine:check-updates", `{"engine":"ollama"}`, true)
+	test("llama.cpp update check does not wait", "engine:check-updates", `{"engine":"llamacpp"}`, false)
+	test("Ollama update waits", "engine:update", `{"engine":"ollama"}`, true)
 	test("Ollama status waits", "engine:status", `{"engine":"ollama"}`, true)
 	test("Ollama install waits", "engine:install", `{"engine":"ollama"}`, true)
 	test("Ollama start waits", "engine:start", `{"engine":"ollama"}`, true)

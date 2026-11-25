@@ -29,7 +29,7 @@ history.
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                                                                                                          |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                                                                                                                        |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                                                                                                                    |
-| Engine version metadata    | Backend-limited                 | The backend status surface does not provide a complete version/install-owner/update contract                                                                                                                                             |
+| Engine version metadata    | Local Ollama                    | The engine manager compares the installed version with the applicable platform release and distinguishes managed and external installs. |
 | Errors                     | Complete                        | Broker-relayed registry with peer synchronization                                                                                                                                                                                        |
 | Workloads                  | Complete after subscription     | Local and peer workload events feed one Electron catalog                                                                                                                                                                                 |
 | Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                                                                                                                    |
@@ -279,11 +279,11 @@ genuinely foreign listener (with an actionable error). Personal AI Router treats
 desired state as authoritative and surfaces a stop error as guidance, not as a
 sign the OFF choice was discarded.
 
-For ease of use, Personal AI Router issues starts in two additional cases and
-keeps no auto-start list of its own: every install sends `engine:install` with
-`start: true`, so a successful install (or managed update) starts the engine;
-and on the first app open Personal AI Router starts every already-installed local
-engine once. Both paths rely on the backend recording desired-enabled as a side
+Every install sends `engine:install` with `start: true`, so a successful install
+starts the engine. A managed engine update uses `engine:update` and preserves
+the engine's running or stopped state. On the first app open Personal AI Router
+starts every already-installed local engine once. Install and first-open starts
+rely on the engine manager recording desired-enabled as a side
 effect of start, so `nvpair-engine-manager` remains the single owner of
 desired-state persistence and restoration.
 

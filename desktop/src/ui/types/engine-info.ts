@@ -4,6 +4,7 @@
 import type {
     EngineType,
     EngineSource,
+    EngineUpdateAvailable,
     ModelItemStatus,
     ModelExpiry,
     EngineProcessStatus
@@ -53,36 +54,6 @@ export interface BackendInstallProgress {
     percent?: number
 }
 
-/**
- * Update availability info surfaced by the universal `EngineVersionChecker`.
- *
- * Cluster-replicated: every node runs its own checker against its own
- * installed engines, writes results into `ClusterState`, and broadcasts
- * `EngineUpdateAvailableEvent` / `EngineUpdateClearedEvent` to peers. Each
- * receiving node forwards them to its renderer as
- * `engines:state-changed` patches scoped to
- * the originating `nodeId`. The renderer's `engine-update-available.store`
- * keys entries by `(nodeId, engineType)` so the Edit Node window can show
- * an Update affordance for any node — local **or** remote — that the user
- * has access to. Entries are cleared automatically when the originating
- * node drops out of `ClusterState`.
- *
- * `installType`:
- * - `managed` — PAIR owns the binary (e.g. `{userData}/ollama`), so the UI
- *   shows a one-click "Update" button that dispatches the `update` engine
- *   command on the engine's owning node.
- * - `external` — the binary lives outside `{userData}` (user installed
- *   Ollama themselves, llama.cpp via brew, etc.). The UI shows an info
- *   banner with release notes and an optional CTA to install a PAIR-managed
- *   copy; PAIR never modifies external installs in place.
- */
-export interface UpdateAvailableInfo {
-    currentVersion: string
-    latestVersion: string
-    releaseUrl: string
-    installType: 'managed' | 'external'
-}
-
 export interface BackendInfo {
     type: EngineType
     displayName: string
@@ -116,11 +87,6 @@ export interface BackendInfo {
     manuallyStopped?: boolean
     /** True when this backend should auto-start on app launch */
     autoStart?: boolean
-    /**
-     * Set when this backend's owning node has detected a newer GitHub
-     * release. Replicated cluster-wide so the Edit Node UI can surface an
-     * Update affordance for any node the user has access to, not only
-     * `selfId`. See `UpdateAvailableInfo` above.
-     */
-    updateAvailable?: UpdateAvailableInfo
+    /** Present when the engine manager reports a supported update. */
+    updateAvailable?: EngineUpdateAvailable
 }

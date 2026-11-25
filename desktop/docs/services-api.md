@@ -97,6 +97,7 @@
 | `engine:action` | request (we call) | ✅ yes |
 | `engine:cancel-pull` | request (we call) | ✅ yes |
 | `engine:catalog` | request (we call) | ✅ yes |
+| `engine:check-updates` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
 | `engine:configured-ports` | request (we call) | ⚠️ not called |
 | `engine:describe` | request (we call) | ⚠️ not called |
@@ -127,6 +128,7 @@
 | `engine:stop` | request (we call) | ✅ yes |
 | `engine:uninstall` | request (we call) | ✅ yes |
 | `engine:uninstall-managed` | request (we call) | ✅ yes |
+| `engine:update` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
 
@@ -275,7 +277,9 @@
 | `discovery:subscribe` | request (we call) | ✅ yes |
 | `discovery:unsubscribe` | request (we call) | ⚠️ not called |
 | `engine:apply-settings` | request (we call) | ✅ yes |
+| `engine:check-updates` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
+| `engine:get-installed` | request (we call) | ✅ yes |
 | `engine:get-settings` | request (we call) | ✅ yes |
 | `engine:install` | request (we call) | ✅ yes |
 | `engine:preview-settings` | request (we call) | ✅ yes |
@@ -283,9 +287,11 @@
 | `engine:set-port` | request (we call) | ⚠️ not called |
 | `engine:set-reserved-port` | request (we call) | ⚠️ not called |
 | `engine:start` | request (we call) | ✅ yes |
+| `engine:status` | request (we call) | ✅ yes |
 | `engine:stop` | request (we call) | ✅ yes |
 | `engine:subscribe` | request (we call) | ✅ yes |
 | `engine:unsubscribe` | request (we call) | ⚠️ not called |
+| `engine:update` | request (we call) | ✅ yes |
 | `errors:get-initial` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
 | `node/add` | request (we call) | ✅ yes |

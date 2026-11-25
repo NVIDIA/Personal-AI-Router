@@ -55,6 +55,9 @@ type engineState struct {
 	plat       *Platform
 	logs       *logBuffer
 	installDir string
+	// bundledInstall is the unmodified vendor recipe, available only when
+	// this engine's active install directory matches the bundled location.
+	bundledInstall *Install
 	// modelsDir is the resolved {models_dir}: the engine's model store, which no
 	// removal this service performs may delete. Empty when the manifest declares
 	// none, in which case uninstall has nothing to preserve.
@@ -192,12 +195,14 @@ type Executor struct {
 	// or a stop command, which later StopAll callers retry. The sweep writes it
 	// without retryMu, since stopAllOnce returns to no caller before the sweep
 	// finishes; retryMu serializes the retries that follow.
-	retryMu       sync.Mutex
-	failedStops   []string
-	mu            sync.Mutex
-	engines       map[string]*engineState
-	modelScope    *http.Server
-	modelScopeURL string
+	retryMu        sync.Mutex
+	failedStops    []string
+	mu             sync.Mutex
+	githubReleases map[string]*cachedGitHubRelease
+	githubRetryAt  time.Time
+	engines        map[string]*engineState
+	modelScope     *http.Server
+	modelScopeURL  string
 }
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
@@ -217,6 +222,7 @@ func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), base
 		pullCleanupTimeout:  5 * time.Second,
 		loadedPollInterval:  defaultLoadedPollSeconds * time.Second,
 		loadedPoke:          make(chan struct{}, 1),
+		githubReleases:      make(map[string]*cachedGitHubRelease),
 		engines:             make(map[string]*engineState),
 	}
 }
@@ -305,6 +311,16 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		logs:       newLogBuffer(),
 		port:       plat.Runtime.Port,
 		installDir: installDir,
+	}
+	if bundled, ok := e.reg.bundledPlatform(engine); ok && plat.InstallDir == bundled.InstallDir && filepath.IsAbs(installDir) {
+		st.bundledInstall = bundled.Install
+		switch engine {
+		case "ollama":
+			err = recoverStagedEngineInstall(installDir, engine)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("recover %s installation: %w", m.DisplayName, err)
+		}
 	}
 	if plat.ModelsDir != "" {
 		st.modelsDir = expandPath(plat.ModelsDir)

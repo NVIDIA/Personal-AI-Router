@@ -392,20 +392,20 @@ func (b *Broker) rejectOllamaHostAliasPort(msg *Message, port int, owner string)
 	return true
 }
 
-// needsOllamaPortGate reports the client requests that can probe and adopt the
-// configured Ollama port. While :11434 is changing from backend to facade,
-// those probes must wait or they can mistake the proxy for a local engine.
-func needsOllamaPortGate(method string, params json.RawMessage) bool {
-	if method == "engine:get-installed" {
+// Presence checks and operations that can start an engine must wait while
+// its compatibility port is changing hands between the engine and the proxy.
+func needsEnginePortGate(engine, method string, params json.RawMessage) bool {
+	switch method {
+	case "engine:get-installed":
 		return true
-	}
-	if method != "engine:status" && method != "engine:install" && method != "engine:start" && method != "engine:restart" {
+	case "engine:status", "engine:check-updates", "engine:install", "engine:update", "engine:start", "engine:restart":
+		var request struct {
+			Engine string `json:"engine"`
+		}
+		return json.Unmarshal(params, &request) == nil && request.Engine == engine
+	default:
 		return false
 	}
-	var request struct {
-		Engine string `json:"engine"`
-	}
-	return json.Unmarshal(params, &request) == nil && request.Engine == "ollama"
 }
 
 // reconcileProxyPortOnReady runs after the proxy announces a bound port

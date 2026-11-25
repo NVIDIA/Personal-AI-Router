@@ -688,23 +688,27 @@ func (r *Registry) applyLocationOverrides(dir string) {
 // (un-overridden) manifest for an engine, used to decide whether a chosen
 // port is back at the default (so its override file can be dropped).
 func (r *Registry) bundledDefaultPort(engine string) (int, bool) {
-	raw, ok := r.bundledRaw[engine]
-	if !ok {
-		return 0, false
-	}
-	merged, err := applyPlatformDefaults(raw)
-	if err != nil {
-		return 0, false
-	}
-	var m Manifest
-	if err := json.Unmarshal(merged, &m); err != nil {
-		return 0, false
-	}
-	p, ok := m.HostPlatform()
+	p, ok := r.bundledPlatform(engine)
 	if !ok {
 		return 0, false
 	}
 	return p.Runtime.Port, true
+}
+
+func (r *Registry) bundledPlatform(engine string) (*Platform, bool) {
+	raw, ok := r.bundledRaw[engine]
+	if !ok {
+		return nil, false
+	}
+	merged, err := applyPlatformDefaults(raw)
+	if err != nil {
+		return nil, false
+	}
+	var m Manifest
+	if err := json.Unmarshal(merged, &m); err != nil {
+		return nil, false
+	}
+	return m.HostPlatform()
 }
 
 // mergeOntoBundled deep-merges an override manifest's raw JSON onto the

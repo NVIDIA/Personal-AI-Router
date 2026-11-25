@@ -147,6 +147,19 @@ func downloadUntilInterrupted(interrupts int) {
 }
 
 func main() {
+	// Installed and staged test executables each report their own release.
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		version, err := os.ReadFile(os.Args[0] + ".version")
+		if err != nil {
+			os.Exit(2)
+		}
+		fmt.Fprintln(os.Stderr, "Warning: could not connect to a running Ollama instance")
+		fmt.Fprintf(os.Stderr, "Warning: client version is %s\n", version)
+		return
+	}
+	if _, err := os.Stat(os.Args[0] + ".fail-start"); err == nil {
+		os.Exit(1)
+	}
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
 		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST", "MODEL_ENDPOINT"} {

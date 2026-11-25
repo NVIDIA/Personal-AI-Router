@@ -20,6 +20,43 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestOllamaDirectoryRename_WaitsForWindowsToReleaseTheDirectory(t *testing.T) {
+	parent := t.TempDir()
+	staged := filepath.Join(parent, "staged")
+	installed := filepath.Join(parent, "ollama")
+	require.NoError(t, os.Mkdir(staged, 0o700))
+	// A directory opened without delete sharing reproduces the handle left
+	// briefly open after Windows finishes executing the staged binary.
+	handle, err := os.Open(staged)
+	require.NoError(t, err)
+	closed := make(chan error, 1)
+	time.AfterFunc(200*time.Millisecond, func() { closed <- handle.Close() })
+
+	err = renameEngineDirectory(staged, installed)
+
+	require.NoError(t, <-closed)
+	require.NoError(t, err)
+	assert.DirExists(t, installed)
+}
+
+func TestReplaceOllamaInstall_RestoresCurrentVersionWhenStagingRemainsLocked(t *testing.T) {
+	e, binary := ollamaUpdateFixture(t, "1.1.0", false)
+	st, err := e.state("ollama")
+	require.NoError(t, err)
+	staged := t.TempDir()
+	handle, err := os.Open(staged)
+	require.NoError(t, err)
+
+	err = e.replaceEngineInstall(t.Context(), st, staged, false)
+
+	require.NoError(t, handle.Close())
+	require.Error(t, err)
+	version, err := ollamaBinaryVersion(t.Context(), binary)
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.0", version)
+	assert.NoDirExists(t, st.installDir+".update-backup")
+}
+
 func TestLlamaCPPInstall_PreservesDestinationPathWithSpaces(t *testing.T) {
 	serverArchive := testZIP(t, "llama-server.exe", "server")
 	cudartArchive := testZIP(t, "cudart64_12.dll", "runtime")
