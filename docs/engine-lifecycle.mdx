@@ -156,6 +156,20 @@ To download models:
 1. Select **Add model**.
 2. Select **Load** when the engine requires an explicit load.
 
+**Add model** shows available models from the engine's catalogue, separately
+from models already downloaded to your machine. If that catalogue cannot be
+loaded, the dialog shows an error with **Retry**. It also makes up to two
+recovery attempts while you keep the dialog open, after five and then ten
+seconds. Closing the dialog cancels those attempts. Cached catalogue results
+remain available during upstream failures; server rate limits can require a
+longer wait before a new fetch is allowed.
+
+You can still search if the initial catalogue fails to load. Search results
+and an empty search result apply only to the query; clearing the search brings
+back **Retry** until the catalogue itself loads successfully.
+If a search fails, **Retry** repeats that query. Any matching entries from the
+catalogue remain visible while you retry the upstream search.
+
 ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
 ## Starting and Stopping an Engine

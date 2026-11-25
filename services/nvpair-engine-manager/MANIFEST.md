@@ -230,7 +230,7 @@ applies to the host the test runs on.
 | `args` | string[] | no | Arguments (process mode). |
 | `env` | object | no | Extra environment (merged over the inherited env). Use `{host}`/`{port}` for the listen address, e.g. `"OLLAMA_HOST": "{host}:{port}"`. |
 | `port` | int | no | Fixed port, or `0` to auto-assign a free loopback port. |
-| `bind` | string | no | Listen address, substituted as `{host}`. Empty ⇒ `127.0.0.1` (the safe default); an inference engine that serves the cluster sets `"0.0.0.0"` (Ollama does), overridable per call via `engine:start {bind}`. Probes always target loopback. |
+| `bind` | string | no | Listen address, substituted as `{host}`. Empty ⇒ `127.0.0.1` (the safe default); an inference engine that serves the cluster sets `"0.0.0.0"`. A per-call `bind` via `engine:start {bind}` overrides this for one call, but a non-loopback value is honored only when the `engine_allow_lan_bind` node setting is on — otherwise the start is rejected with `-32602` (`bind must be a loopback address`). Probes always target loopback. |
 | `model` | string | no | The persisted launch model of a single-model engine, available to `args` and `env` as `{model}`. Written to the per-user override by a `launch_model` action (and by the first `hf_snapshot` download); a bundled manifest never sets it. See Single-model engines. |
 | `start` | string[][] | command mode | Ordered bring-up commands (each an argv) for `command` mode, e.g. `[["{cli}","server","start","--port","{port}"]]`. |
 | `cli` | string | no | The engine's control-CLI path for this platform, referenced as `{cli}` by start/stop/actions so the manifest's **global** actions resolve to the correct per-OS binary. |
@@ -605,7 +605,7 @@ validation at load:
 
 | Placeholder | Meaning | Available in |
 |---|---|---|
-| `{host}` | Listen address from `runtime.bind` (or a per-call `bind`); `127.0.0.1` when unset | runtime args/env |
+| `{host}` | Listen address from `runtime.bind` (or a per-call `bind`, honored for a non-loopback address only when the `engine_allow_lan_bind` node setting is on); `127.0.0.1` when unset | runtime args/env |
 | `{port}` | The chosen runtime port | runtime args/env, start, probes, action paths |
 | `{bin}` | Resolved binary path (process mode) | runtime args/env |
 | `{cli}` | The platform's `runtime.cli` path | runtime start/stop, action `cmd` |

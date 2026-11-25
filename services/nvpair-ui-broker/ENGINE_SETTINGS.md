@@ -97,7 +97,11 @@ The existing engine-control listener exposes pinned-mTLS POST endpoints
 `/v1/engine-settings/get`, `/preview`, `/apply` and GET `/events`. Requests are
 limited to 64 KiB and cannot forward another hop. The authenticated caller ID is
 carried through correlated `engine:settings-request` / `engine:settings-reply`
-notifications to the local broker. Cancellation and pin removal cancel queued
+notifications to the local broker. The same notification pair also carries a
+supervised worker's own `settings/*` read — the engine-manager asking
+`settings/get-engine-allow-lan-bind` before a start — which the broker
+forwards verbatim to `nvpair-node-settings` rather than treating it as a
+peer operation. Cancellation and pin removal cancel queued
 work; the broker rechecks the caller after acquiring the node lock. Once
 durably accepted, the target completes under its own thirty-one-minute deadline even
 if the initiating peer disconnects.

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -95,11 +96,15 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 	req.Header.Set("User-Agent", "PAIR/1.0")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("ModelScope catalog request failed: %w", withoutURL(err))
+		cause := withoutURL(err)
+		return nil, &catalogRequestError{message: fmt.Sprintf("ModelScope catalog request failed: %v", cause), cause: cause}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ModelScope catalog returned HTTP %d", resp.StatusCode)
+		return nil, &catalogRequestError{
+			message: fmt.Sprintf("ModelScope catalog returned HTTP %d", resp.StatusCode), status: resp.StatusCode,
+			retryAt: catalogRetryTime(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 	var result struct {
 		Success bool `json:"success"`
@@ -158,13 +163,14 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 	}
 	wg.Wait()
 	failed, succeeded := 0, 0
-	var firstErr error
+	var listingErr error
+	now := time.Now()
 	for i, err := range errs {
 		switch {
 		case err != nil:
 			failed++
-			if firstErr == nil {
-				firstErr = err
+			if listingErr == nil || catalogRetryDelay(err, now) > catalogRetryDelay(listingErr, now) {
+				listingErr = err
 			}
 		case listed[i]:
 			succeeded++
@@ -182,11 +188,11 @@ func (c *catalogService) fetchModelScope(ctx context.Context, query string) ([]C
 	// to fail first.
 	ended := ctx.Err()
 	if ended != nil {
-		firstErr = ended
+		listingErr = errors.Join(ended, listingErr)
 	}
 	// One summary rather than every listing's error: a timeout fails them all
 	// alike, and the terminal shows the message as is.
-	summary := fmt.Errorf("%d of %d ModelScope file lists failed: %w", failed, failed+succeeded, firstErr)
+	summary := fmt.Errorf("%d of %d ModelScope file lists failed: %w", failed, failed+succeeded, listingErr)
 	switch {
 	case len(models) == 0:
 		// A failed listing may have held the only model the filters would

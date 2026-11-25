@@ -22,7 +22,7 @@ import (
 // resolve normally. This keeps defaults updateable while preserving exactly
 // what the user saved. Nil LaunchArgs inherits the manifest's Args or editable
 // Start command; a non-nil empty slice keeps only fixed and managed arguments.
-func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]string) (launchCommand, error) {
+func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]string, allowLanBind bool) (launchCommand, error) {
 	if rt.LaunchEnv != nil {
 		env, err := literalEnvironment(rt.LaunchEnv)
 		if err != nil {
@@ -55,7 +55,11 @@ func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]strin
 		}
 		return command, nil
 	}
-	if ip := net.ParseIP(vars["host"]); ip == nil || !ip.IsLoopback() {
+	// A configured engine binds loopback unless the operator opted into
+	// LAN binds: the engine:start gate already verified the node setting
+	// and carried the decision here through startOpts. Any other caller
+	// passes false, so the loopback-only default still fails closed.
+	if ip := net.ParseIP(vars["host"]); ip == nil || (!ip.IsLoopback() && !allowLanBind) {
 		return launchCommand{}, fmt.Errorf("configured engines must bind to loopback")
 	}
 	// Override every declared environment spelling, including inherited aliases.
@@ -74,20 +78,23 @@ func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]strin
 	return command, nil
 }
 
-func resolveRuntimeCommand(rt Runtime, index int, vars map[string]string) (launchCommand, error) {
+func resolveRuntimeCommand(rt Runtime, index int, vars map[string]string, allowLanBind bool) (launchCommand, error) {
 	command, err := resolveCommandLaunch(rt.Start[index], vars)
 	if err != nil {
 		return launchCommand{}, err
 	}
 	if rt.EditableLaunch != nil && index == rt.EditableLaunch.StartIndex {
-		return applyLiteralLaunch(rt, command, vars)
+		return applyLiteralLaunch(rt, command, vars, allowLanBind)
 	}
 	return command, nil
 }
 
 // launchForState is read-only; callers hold opMu, and neither preview nor a
 // settings read probes ports, starts processes or writes configuration.
-func launchForState(st *engineState, port int) (launchCommand, error) {
+// Display and preview pass allowLanBind=false: they describe the launch,
+// they never start it, and the preview path already rejects non-loopback
+// binds before it gets here.
+func launchForState(st *engineState, port int, allowLanBind bool) (launchCommand, error) {
 	st.mu.Lock()
 	rt := st.plat.Runtime
 	bin := st.binPath
@@ -95,19 +102,19 @@ func launchForState(st *engineState, port int) (launchCommand, error) {
 	// A missing launch model must not hide the settings: the display resolves
 	// {model} empty, and only a start refuses.
 	vars, _ := st.launchVars(rt, effectiveBind(rt.Bind, ""), port)
-	return resolveSettingsLaunch(rt, bin, port, vars)
+	return resolveSettingsLaunch(rt, bin, port, vars, allowLanBind)
 }
 
 // resolveSettingsLaunch uses captured values so a status update cannot change
 // the executable halfway through assembling a settings response.
-func resolveSettingsLaunch(rt Runtime, bin string, port int, vars map[string]string) (launchCommand, error) {
+func resolveSettingsLaunch(rt Runtime, bin string, port int, vars map[string]string, allowLanBind bool) (launchCommand, error) {
 	vars["host"] = effectiveBind(rt.Bind, "")
 	vars["port"] = strconv.Itoa(port)
 	if rt.CLI != "" {
 		vars["cli"] = expandPath(rt.CLI)
 	}
 	if rt.modeOrDefault() == "process" {
-		return resolveProcessLaunch(rt, bin, vars)
+		return resolveProcessLaunch(rt, bin, vars, allowLanBind)
 	}
 	index := 0
 	if rt.EditableLaunch != nil {
@@ -116,7 +123,7 @@ func resolveSettingsLaunch(rt Runtime, bin string, port int, vars map[string]str
 	if index < 0 || index >= len(rt.Start) {
 		return launchCommand{}, fmt.Errorf("invalid editable start command")
 	}
-	return resolveRuntimeCommand(rt, index, vars)
+	return resolveRuntimeCommand(rt, index, vars, allowLanBind)
 }
 
 func (e *Executor) launchStateLocked(engine string, st *engineState) settings.LaunchState {
@@ -126,8 +133,9 @@ func (e *Executor) launchStateLocked(engine string, st *engineState) settings.La
 	st.mu.Unlock()
 	// launchVars, not pathVars: a single-model engine templates {model} in its
 	// launch, and the displayed command must be the one a start would run.
+	// The preview never starts anything, so it keeps the loopback-only default.
 	vars, _ := st.launchVars(rt, effectiveBind(rt.Bind, ""), result.ServerPort)
-	command, err := resolveSettingsLaunch(rt, bin, result.ServerPort, vars)
+	command, err := resolveSettingsLaunch(rt, bin, result.ServerPort, vars, false)
 	if engine == "llamacpp" {
 		result.ModelSource = modelSource(st.plat.Runtime)
 	}
@@ -275,7 +283,7 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 	if request.Resolution != "" && request.Resolution != "server" && request.Resolution != "launch" {
 		return fail("Invalid port conflict resolution.")
 	}
-	base, err := launchForState(st, request.Settings.ServerPort)
+	base, err := launchForState(st, request.Settings.ServerPort, false)
 	if err != nil {
 		return fail("Cannot resolve the engine executable.")
 	}
@@ -386,7 +394,7 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 	rt.LaunchArgs = result.Args
 	rt.LaunchEnv = result.Env
 	vars["port"] = strconv.Itoa(result.Settings.ServerPort)
-	command, err := applyLiteralLaunch(rt, base, vars)
+	command, err := applyLiteralLaunch(rt, base, vars, false)
 	if err != nil {
 		return fail(err.Error())
 	}

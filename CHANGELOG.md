@@ -11,6 +11,19 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.1.4 — Simplify pairing code and reject out-of-order messages (#184)
+
+- Pairing rejects premature completion and key-exchange messages, preventing authentication bypasses, crashes, and stuck pairing sessions.
+
+## 1.1.3 — Recover model catalogs without reopening Add model (#219)
+
+- Add model distinguishes unavailable catalogs from empty results and provides Retry with a countdown to automatic recovery attempts.
+- Temporary request and server failures can recover sooner while preserving cached results and upstream rate limits.
+
+## 1.1.2 — Local engine starts reject non-loopback bind addresses (#81)
+
+- `engine:start` and `engine:install` now reject non-loopback `bind` overrides with `-32602`, closing an accidental LAN exposure of the unauthenticated engine API. Remote starts already hard-bind loopback; local starts now match. A deliberate opt-in exists: the `engine_allow_lan_bind` node setting (default false, readable via `settings/get-engine-allow-lan-bind`) lets operators permit non-loopback binds. It is read live on every start, so no restart is needed.
+
 ## 1.1.1 — Keep cluster inference available while vLLM starts (#218)
 
 - Re-enabling vLLM now lets requests fail over to another eligible model owner while the local engine loads.

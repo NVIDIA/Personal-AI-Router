@@ -129,9 +129,9 @@ describe('model catalog relay', () => {
         })
     })
 
-    // The modal renders its empty state for this; a rejection would surface as
-    // a failure the user can do nothing about.
-    it('turns a failed call into an empty hub rather than an error', async () => {
+    // Unknown capability lets the renderer distinguish failure from a valid
+    // empty list while background warming remains safe to fire and forget.
+    it('marks a failed catalog unread so the renderer can offer recovery', async () => {
         mocks.supervisor.callProcess.mockRejectedValue(new Error('lm studio catalog unavailable'))
         await expect(getEngineHubModels('lm-studio')).resolves.toEqual({
             models: [],
@@ -167,8 +167,9 @@ describe('model catalog relay', () => {
         // Both the relay and display mapper must preserve unknown support so a
         // failed browse does not prevent the next query reaching the engine.
         vi.stubGlobal('window', { pairApi: { engines: { searchHub: getEngineHubModels } } })
-        const browse = await searchEngineHub('vllm', 'self')
-        expect(browse).toEqual({ models: [], searchable: null })
+        await expect(searchEngineHub('vllm', 'self')).rejects.toThrow(
+            'Available models could not be loaded. Please try again.'
+        )
 
         const result = await searchEngineHub('vllm', 'self', 'coder')
         expect(result.searchable).toBe(true)
