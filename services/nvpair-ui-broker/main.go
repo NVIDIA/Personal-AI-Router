@@ -20,6 +20,7 @@ import (
 	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
 	"nvpair-shared/engines"
+	"nvpair-shared/noderec"
 )
 
 func main() {
@@ -36,6 +37,7 @@ func main() {
 	clusterMgrPath := flag.String("cluster-manager-path", "", "path to nvpair-cluster-manager binary (default: ./nvpair-cluster-manager in the current working directory)")
 	schedulerPath := flag.String("scheduler-path", "", "path to nvpair-job-scheduler binary (default: ./nvpair-job-scheduler in the current working directory)")
 	clusterDirFlag := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/) the broker passes to its mDNS workers (nvpair-errors, nvpair-workload-manager, nvpair-node-info, nvpair-node-scanner, nvpair-manual-nodes) to enable cluster-scoped inter-node mTLS; defaults to the per-user Nvidia Corporation/Personal AI Router cluster/ dir, where nvpair-cluster-manager mints them")
+	portBase := flag.Int("port-base", noderec.DefaultPortBase, "first port of the six-port block this broker tells its workers to bind (node-info, errors, workload-manager, cluster-manager, engine-manager models and remote control); shift it only to run a second broker or a test harness beside a live one, since installer firewall rules and desktop pairing assume the default block")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -66,6 +68,14 @@ func main() {
 		sink.Close()
 		os.Exit(1)
 	}
+
+	// The block must fit in the unprivileged port space before any worker is
+	// told a port from it; one log line records which block the run uses, so a
+	// shifted deployment is visible in the log without reading the argv.
+	if err := noderec.ValidatePortBase(*portBase); err != nil {
+		fatalf("port base: %v", err)
+	}
+	slog.Info("resolved service port block", "portBase", *portBase)
 
 	// The inter-node workers do cluster-scoped mTLS off the cert + pins
 	// nvpair-cluster-manager mints under the per-user data dir's cluster/ subtree.
@@ -258,6 +268,7 @@ func main() {
 		clusterMgr:   resolvedClusterMgr,
 		scheduler:    resolvedScheduler,
 		clusterDir:   clusterDir,
+		portBase:     *portBase,
 	}
 	if err := NewBroker(codec, paths).Serve(ctx); err != nil && ctx.Err() == nil {
 		fatalf("broker error: %v", err)

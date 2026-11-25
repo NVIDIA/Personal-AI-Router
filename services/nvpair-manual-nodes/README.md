@@ -22,6 +22,7 @@ Uses bidirectional newline-delimited JSON-RPC 2.0. By default, communication is 
 |---|---|---|
 | `--ipc <path>` | _(stdio)_ | IPC endpoint: Unix socket or Windows named pipe |
 | `--cluster-dir <path>` | _(none)_ | Current cluster identity and exact certificate pins, required for all service node-info reads |
+| `--node-info-port <n>` | `14318` | Node-info port probed for entries without a `tls_port`. The broker passes its own resolved `ni` port, so manual entries follow a service-block shift; standalone runs keep the canonical port |
 | `--log-level <level>` | `info` | `error` / `warn` / `info` / `debug`; falls back to `$NVPAIR_LOG_LEVEL`. Also changeable at runtime via the `log/set-level` method |
 | `--version` | | Print version and exit |
 

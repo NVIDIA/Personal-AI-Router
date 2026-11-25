@@ -424,7 +424,7 @@ func TestSettingsPortValidation_IncludesStoppedEnginesAndAliases(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, preview.Errors, "equal ports accepted")
 	p = h.request(t)
-	p.Settings.ServerPort = engineControlPort
+	p.Settings.ServerPort = h.b.ports().engineControl
 	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
 	require.NoError(t, err, "reserved control port accepted (%v)", preview)
 	require.NotEmpty(t, preview.Errors, "reserved control port accepted (%v)", preview)

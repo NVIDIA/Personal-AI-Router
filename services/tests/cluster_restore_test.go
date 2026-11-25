@@ -27,7 +27,7 @@ import (
 // same dir is reused), returning its stdin, stdout frame stream, and a cleanup.
 func startBrokerInDir(t *testing.T, configDir string, extraArgs ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
-	args := append([]string{"--scanner-path", scannerBin, "--cluster-dir", t.TempDir()}, extraArgs...)
+	args := appendPortBase(append([]string{"--scanner-path", scannerBin, "--cluster-dir", t.TempDir()}, extraArgs...), testPortBase)
 	cmd := exec.Command(brokerBin, args...)
 	cmd.Env = append(os.Environ(),
 		"HOME="+configDir,
@@ -165,9 +165,6 @@ func waitSettingClusterID(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Mes
 // survives a restart), and cluster:leave must clear it (so the node stays
 // unclustered after a restart rather than having the stale id restored).
 func TestBroker_PersistsClusterLifecycleToSettings(t *testing.T) {
-	if portBusy(14321) {
-		t.Skip("cluster-manager inter-node port 14321 already in use; skipping")
-	}
 	configDir := t.TempDir()
 
 	// 1. Create a cluster; the broker must mirror the new id into settings.

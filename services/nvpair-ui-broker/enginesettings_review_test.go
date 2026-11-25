@@ -122,7 +122,7 @@ func TestSettingsMigration_RejectsReservedPorts(t *testing.T) {
 		})
 	}
 	test("PAIR control port", func(h *settingsHarness, request settings.Request) int {
-		return engineControlPort
+		return h.b.ports().engineControl
 	})
 	test("inherited Ollama host alias", func(h *settingsHarness, request settings.Request) int {
 		h.b.ollamaHostAliasMu.Lock()

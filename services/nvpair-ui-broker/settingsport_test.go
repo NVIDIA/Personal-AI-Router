@@ -95,7 +95,7 @@ func TestBrokerLlamaCPPProxySetPort_RejectsConflicts(t *testing.T) {
 		})
 	}
 	test("PAIR service port", func(t *testing.T, h *settingsHarness, before settings.Snapshot) int {
-		return engineControlPort
+		return h.b.ports().engineControl
 	})
 	test("same engine server port", func(t *testing.T, h *settingsHarness, before settings.Snapshot) int {
 		return before.Settings.ServerPort
