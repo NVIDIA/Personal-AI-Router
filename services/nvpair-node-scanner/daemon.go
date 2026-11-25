@@ -411,6 +411,9 @@ func (d *daemon) run(ctx context.Context) {
 		// the responder keeps its A records live (both via netmon).
 		go d.watchAddress(ctx)
 	}
+	// The browser also closes events on cancellation. Join on every return path
+	// so Scanner.Run cannot exit before the responder sends its goodbye.
+	defer waitForShutdown(responderDone, shutdownJoinTimeout, "_nvpair-node mDNS responder")
 	// Publish our own directory entry from the local registry BEFORE the browse
 	// loop runs. Self presence is registry-driven, not browse-driven: on Windows
 	// the host frequently does not loop its own multicast back to the browsing
@@ -436,14 +439,6 @@ func (d *daemon) run(ctx context.Context) {
 			if d.nodeInfoClients != nil {
 				d.nodeInfoClients.CloseIdle()
 			}
-			// responder.Run returns only after its shutdown goodbye has
-			// left the machine, so returning here first would let
-			// Scanner.Run return — and the process exit — with the
-			// retraction still unsent. The other background loops are not
-			// joined: after cancellation they hold nothing the wire still
-			// needs, and joining them could outlast the responder send for
-			// no retraction benefit.
-			waitForShutdown(responderDone, shutdownJoinTimeout, "_nvpair-node mDNS responder")
 			return
 		case ev, ok := <-events:
 			if !ok {
