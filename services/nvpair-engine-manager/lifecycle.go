@@ -60,11 +60,17 @@ func (e *Executor) waitDetect(engine string, want bool, timeout time.Duration) b
 // startOpts carries per-call start overrides. Zero values mean "use the
 // manifest": Port 0 => the manifest port (which may itself be 0 =
 // auto-assign a free loopback port); Bind "" => the manifest's
-// runtime.bind (which itself defaults to loopback).
+// runtime.bind (which itself defaults to loopback). AllowLanBind carries
+// the engine_allow_lan_bind decision the engine:start gate already made:
+// a non-loopback bind passes the gate only when the operator opted in,
+// and the launch path must honor that same decision instead of
+// re-imposing loopback-only. Callers that did not go through the gate
+// leave it false, so a non-loopback bind still fails closed at launch.
 type startOpts struct {
 	RequireOwned bool
 	Port         int
 	Bind         string
+	AllowLanBind bool
 }
 
 // effectiveBind picks the listen address substituted as {host}: a per-call
@@ -247,7 +253,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.mu.Unlock()
 	e.emitState(engine)
 
-	err := e.bringUp(ctx, st, engine, rt, port, vars)
+	err := e.bringUp(ctx, st, engine, rt, port, vars, opts.AllowLanBind)
 	st.mu.Lock()
 	st.starting = false
 	st.mu.Unlock()
@@ -285,16 +291,16 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	return nil
 }
 
-func (e *Executor) bringUp(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string) error {
+func (e *Executor) bringUp(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string, allowLanBind bool) error {
 	if rt.modeOrDefault() == "command" {
-		return e.bringUpCommand(ctx, st, engine, rt, port, vars)
+		return e.bringUpCommand(ctx, st, engine, rt, port, vars, allowLanBind)
 	}
-	return e.bringUpProcess(ctx, st, engine, rt, port, vars)
+	return e.bringUpProcess(ctx, st, engine, rt, port, vars, allowLanBind)
 }
 
 // bringUpProcess spawns the engine as a foreground process this service
 // owns, then waits for readiness.
-func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string) error {
+func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string, allowLanBind bool) error {
 	// The readiness allowance counts from here, so the work before launch
 	// (vLLM's metadata fetch and tool-parser probe) is inside it, and a start
 	// stays within what a remote peer waits for.
@@ -302,7 +308,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	st.mu.Lock()
 	binPath := st.binPath
 	st.mu.Unlock()
-	launch, err := resolveProcessLaunch(rt, binPath, vars)
+	launch, err := resolveProcessLaunch(rt, binPath, vars, allowLanBind)
 	if err == nil {
 		err = validateEffectiveLaunch(rt, launch, vars["host"], vars["port"])
 	}
@@ -398,7 +404,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 // bringUpCommand runs the manifest's ordered start commands (for a
 // daemon-style engine such as LM Studio), then waits for readiness.
 // There is no owned process — liveness comes from the probe.
-func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string) error {
+func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string, allowLanBind bool) error {
 	st.mu.Lock()
 	st.proc = nil
 	st.mu.Unlock()
@@ -421,7 +427,7 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		e.startLMStudioHost(ctx, expandPath(rt.CLI))
 	}
 	for index := range rt.Start {
-		launch, err := resolveRuntimeCommand(rt, index, vars)
+		launch, err := resolveRuntimeCommand(rt, index, vars, allowLanBind)
 		if err != nil {
 			e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
 			return cleanup(err)

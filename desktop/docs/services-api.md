@@ -35,8 +35,10 @@
 - ⚠️ nvpair-job-scheduler → scheduler:tick
 - ⚠️ nvpair-node-info → n/a
 - ⚠️ nvpair-node-settings → settings/get-cluster-auto-sync
+- ⚠️ nvpair-node-settings → settings/get-engine-allow-lan-bind
 - ⚠️ nvpair-node-settings → settings/get-force-ports
 - ⚠️ nvpair-node-settings → settings/set-cluster-auto-sync
+- ⚠️ nvpair-node-settings → settings/set-engine-allow-lan-bind
 - ⚠️ nvpair-node-settings → settings/set-force-ports
 - ⚠️ nvpair-proxy → facade/enable
 - ⚠️ nvpair-proxy → node/selected
@@ -194,10 +196,12 @@
 | `settings/get-cluster-auto-sync` | request (we call) | ⚠️ not called |
 | `settings/get-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/get-cluster-id` | request (we call) | ✅ yes |
+| `settings/get-engine-allow-lan-bind` | request (we call) | ⚠️ not called |
 | `settings/get-force-ports` | request (we call) | ⚠️ not called |
 | `settings/set-cluster-auto-sync` | request (we call) | ⚠️ not called |
 | `settings/set-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/set-cluster-id` | request (we call) | ✅ yes |
+| `settings/set-engine-allow-lan-bind` | request (we call) | ⚠️ not called |
 | `settings/set-force-ports` | request (we call) | ⚠️ not called |
 
 ## nvpair-proxy

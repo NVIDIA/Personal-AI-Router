@@ -26,20 +26,6 @@ var (
 )
 
 const (
-	// engineManagerHTTPPort is the fixed LAN port the broker tells
-	// nvpair-engine-manager to serve its HTTP surface (/v1/models) on, and the port
-	// it registers as the em service so peers' daemons can fetch this node's
-	// model list. Fixed like node-info's :14318 (next free in the 143xx range);
-	// the broker knows it, so no dynamic port handshake is needed.
-	engineManagerHTTPPort = 14322
-
-	// engineControlPort is the fixed LAN port the broker tells
-	// nvpair-engine-manager to serve its cluster-scoped mTLS remote-control surface
-	// (the ec service: remote install/pull/start/stop + engine status) on. Unlike
-	// em (plain, model list) it's pin-based mTLS and only binds when this node is
-	// clustered. Next free after em in the 143xx range.
-	engineControlPort = 14323
-
 	// autoAdvertiseInterval is how often the broker polls a local engine to
 	// decide whether to register it with (or unregister it from) the discovery
 	// daemon (a 5s cadence).

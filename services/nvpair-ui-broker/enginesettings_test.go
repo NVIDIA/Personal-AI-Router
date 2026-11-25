@@ -437,7 +437,7 @@ func TestSettingsPortValidation_IncludesStoppedEnginesAndAliases(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, preview.Errors, "equal ports accepted")
 	p = h.request(t)
-	p.Settings.ServerPort = engineControlPort
+	p.Settings.ServerPort = h.b.ports().engineControl
 	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
 	require.NoError(t, err, "reserved control port accepted (%v)", preview)
 	require.NotEmpty(t, preview.Errors, "reserved control port accepted (%v)", preview)
@@ -499,6 +499,67 @@ func TestSettingsPrepareExplicit_FailedApplySpawnsLastAppliedPort(t *testing.T) 
 	require.Equal(t, "failed", h.b.engineSettings["ollama"].Snapshot.Phase, "failed apply not recorded")
 	require.True(t, h.b.prepareExplicitEngineSettings("ollama"))
 	require.Equal(t, int32(good), h.b.ollamaState().startupPort.Load(), "spawn port must skip the failed proxy choice")
+}
+
+func TestSettingsPrepareExplicit_FailedApplySpawnsObservedPorts(t *testing.T) {
+	// A failed apply stops wherever it got to.
+	// Engine-manager keeps the new server port and rebinds the proxy, before launching
+	// the snapshot's observed port and not the pre-apply config
+	b := &Broker{codec: NewCodec(&bytes.Buffer{}), engineSettingsLoaded: true,
+		engineSettings: map[string]*engineSettingsRecord{"ollama": {
+			Explicit: true,
+			Previous: settings.Config{ServerPort: 24011, ProxyPort: 24010},
+			Snapshot: settings.Snapshot{
+				Settings:            settings.Config{ServerPort: 24013, ProxyPort: 24012},
+				Phase:               "failed",
+				EffectiveServerPort: 24013,
+				EffectiveProxyPort:  24012,
+			},
+		}},
+	}
+	require.True(t, b.prepareExplicitEngineSettings("ollama"))
+	require.Equal(t, int32(24012), b.ollamaState().startupPort.Load(), "spawn port must follow the observed proxy port")
+	require.Equal(t, int32(24013), b.ollamaState().backendPort.Load(), "backend port must follow the observed server port")
+}
+
+func TestSettingsPrepareExplicit_FailedApplyWithoutObservedPortsSpawnsPrevious(t *testing.T) {
+	// When the apply died before any step was observed the pre-apply config remains the spawn anchor.
+	b := &Broker{codec: NewCodec(&bytes.Buffer{}), engineSettingsLoaded: true,
+		engineSettings: map[string]*engineSettingsRecord{"ollama": {
+			Explicit: true,
+			Previous: settings.Config{ServerPort: 24011, ProxyPort: 24010},
+			Snapshot: settings.Snapshot{
+				Settings: settings.Config{ServerPort: 24013, ProxyPort: 24012},
+				Phase:    "failed",
+			},
+		}},
+	}
+	require.True(t, b.prepareExplicitEngineSettings("ollama"))
+	require.Equal(t, int32(24010), b.ollamaState().startupPort.Load(), "spawn port must fall back to the pre-apply proxy port")
+	require.Equal(t, int32(24011), b.ollamaState().backendPort.Load(), "backend port must fall back to the pre-apply server port")
+}
+
+func TestSettingsApply_ChainedFailuresKeepRollbackAnchor(t *testing.T) {
+	// Re-applying on top of a failed port mapping must not promote the failed state to the rollback anchor.
+	h := newSettingsHarness(t)
+	p := h.request(t)
+	base := p.Settings
+	h.failRebind.Store(true)
+	first, firstRelease := reserveSettingsPort(t)
+	firstRelease()
+	p.Settings.ProxyPort = first
+	_, err := h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	require.Equal(t, "failed", h.b.engineSettings["ollama"].Snapshot.Phase, "first proxy move not recorded as failed")
+	second, secondRelease := reserveSettingsPort(t)
+	secondRelease()
+	p = h.request(t)
+	p.Settings.ProxyPort = second
+	_, err = h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	require.Equal(t, "failed", h.b.engineSettings["ollama"].Snapshot.Phase, "second proxy move not recorded as failed")
+	require.Equal(t, base.ProxyPort, h.b.engineSettings["ollama"].Previous.ProxyPort, "rollback anchor must stay below the failure streak")
+	require.Equal(t, base.ServerPort, h.b.engineSettings["ollama"].Previous.ServerPort, "rollback anchor must stay below the failure streak")
 }
 
 func TestSettings_MigratesLegacyProxyChoiceBeforeManagedDefaults(t *testing.T) {

@@ -207,7 +207,7 @@ Ollama and LM Studio model-list JSON decoders read at most 16 MiB. A JSON value
 that extends past this limit follows the existing model-parse failure path.
 Hardware decoding requires the complete response body to fit within 64 KiB.
 
-`node_info_port` is `14318` unless `tls_port > 0` overrides it. Service hardware reads always use pinned mTLS. Engine legs remain explicitly configured plain HTTP. `reachable` is `ollama_up || lmstudio_up || node_info_up`, independent of public previews. Publish changed status and every accepted hardware snapshot so stable values do not stop refreshing the scheduling cache.
+`node_info_port` defaults to the manager's `--node-info-port` (`14318` standalone; the broker hands it its resolved `ni` port) unless `tls_port > 0` overrides it. Service hardware reads always use pinned mTLS. Engine legs remain explicitly configured plain HTTP. `reachable` is `ollama_up || lmstudio_up || node_info_up`, independent of public previews. Publish changed status and every accepted hardware snapshot so stable values do not stop refreshing the scheduling cache.
 
 ### 7.3 Probe transport and authenticated identity
 
@@ -332,7 +332,7 @@ This worker persists nothing. The broker owns a JSON array of `{ id, address, na
 
 ## 14. Sample usage
 
-`nvpair-ui-broker` spawns the worker as `nvpair-manual-nodes --log-level info --cluster-dir <dir>` over stdio pipes. The worker emits `ready` carrying the version stamped into the binary at build time, which the broker logs, then starts its 10-second probe ticker.
+`nvpair-ui-broker` spawns the worker as `nvpair-manual-nodes --log-level info --node-info-port <ni> --cluster-dir <dir>` over stdio pipes. The worker emits `ready` carrying the version stamped into the binary at build time, which the broker logs, then starts its 10-second probe ticker.
 
 A user enters `10.0.1.50` and names it `lab`. The broker relays `{"jsonrpc":"2.0","id":1,"method":"node/add","params":{"address":"10.0.1.50","name":"lab"}}`. The worker stores entry `lab` and immediately returns unprobed status: engine and node-info ports filled, every `*_up` false, and unverified identity. Broker persists the successful entry and returns the result to the client while the initial probe runs independently.
 
@@ -352,11 +352,12 @@ The host is then powered off. The first cycle that finds nothing emits `node/upd
 |---|---|---|
 | `--ipc <path>` | `""` (stdio) | Dial a Unix domain socket or Windows named pipe via `nvpair-shared/ipc` instead of using `stdin`/`stdout`. A dial failure is fatal. |
 | `--cluster-dir <path>` | `""` | Cluster config dir (`node.crt` / `node.key` plus `trusted/`). All hardware reads require current cluster membership and pinned mTLS. |
+| `--node-info-port <n>` | `14318` | Node-info port for entries without an explicit `tls_port`. The broker passes its resolved `ni` port so manual entries follow a `--port-base` shift of the service block; standalone runs keep the canonical port. |
 | `--log-level <level>` | `$NVPAIR_LOG_LEVEL`, else `info` | Initial `slog` level (`debug`\|`info`\|`warn`\|`error`); registered by `applog.RegisterFlag`. |
 | `--version` | off | Print `Version` and exit `0`. |
 
 Startup order: parse flags, print version and exit if asked, `applog.Init`, `clustertrust.Open(--cluster-dir)` (a live view, so a cluster joined later is picked up without a restart), open the transport, install the `SIGINT`/`SIGTERM` handler, construct the `Manager`, emit `ready`, start the probe loop, and enter the read loop.
 
-The process is always a child. `nvpair-ui-broker` spawns the binary named by its `--manual-nodes-path` flag, which the desktop application always passes, and otherwise looks for `nvpair-manual-nodes` in its own working directory. It spawns it through `startRPCWorker` with `--log-level <current>` plus `--cluster-dir <dir>` when the broker resolved one, wires `stdin`/`stdout` pipes, and inherits the child's `stderr`. It is registered as an optional worker under a restart policy, so a crash respawns it and triggers `clearManualNodesState`. The broker's `Stop` closes `stdin`; the child observes EOF, returns from `readLoop`, cancels its context to stop the probe loop, closes the transport, and exits `0`. A `shutdown` request and a caught signal follow the same cancellation path. Electron never launches this worker directly — only the broker does.
+The process is always a child. `nvpair-ui-broker` spawns the binary named by its `--manual-nodes-path` flag, which the desktop application always passes, and otherwise looks for `nvpair-manual-nodes` in its own working directory. It spawns it through `startRPCWorker` with `--log-level <current>` plus `--node-info-port <the broker's resolved ni port>` and `--cluster-dir <dir>` when the broker resolved one, wires `stdin`/`stdout` pipes, and inherits the child's `stderr`. It is registered as an optional worker under a restart policy, so a crash respawns it and triggers `clearManualNodesState`. The broker's `Stop` closes `stdin`; the child observes EOF, returns from `readLoop`, cancels its context to stop the probe loop, closes the transport, and exits `0`. A `shutdown` request and a caught signal follow the same cancellation path. Electron never launches this worker directly — only the broker does.
 
 Build and staging: `services/build.sh` (`build_subbinary 4 nvpair-manual-nodes`) and `services/build.bat` (`[4/13]`) read the version from `services/versions.json` with `jq` and run `go build -ldflags "-X main.Version=$V_MNODES"`, then copy the binary into `services/build/bin/`. `services/installer_build.sh` stages it into the tarball's `bin/`, and `services/installer/nvpair-setup.nsi` installs, firewall-registers, taskkills, and deletes `nvpair-manual-nodes.exe`. For the desktop app, `npm run build:modular-binaries` produces `desktop/cli-bin/`, where `MODULAR_RUNTIME_BINARIES` declares it `processName: 'manual-nodes'`, `launchOwner: 'broker'`, `optional: true`, `args: []`, and `needsFirewallAccess: false` — it is client-only and needs no firewall rule.

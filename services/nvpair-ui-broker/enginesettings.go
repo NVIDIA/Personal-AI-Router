@@ -257,14 +257,19 @@ func (b *Broker) publishSettingsLocked() {
 	}
 }
 
-func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string, config settings.Config, current settings.Snapshot, restart bool) error {
+func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string, config settings.Config, current settings.Snapshot, restartingEngine bool) error {
 	if config.ServerPort < 1 || config.ServerPort > 65535 || config.ProxyPort < 1 || config.ProxyPort > 65535 {
 		return fmt.Errorf("ports must be between 1 and 65535")
 	}
 	if config.ServerPort == config.ProxyPort {
 		return fmt.Errorf("Server port and proxy port collide: both are %d. Choose different ports.", config.ServerPort)
 	}
-	reserved := map[int]bool{engineManagerHTTPPort: true, engineControlPort: true, nodeInfoHTTPPort: true, errorsHTTPPort: true, workloadHTTPPort: true, clusterManagerHTTPPort: true}
+	// The broker's own service block is reserved whether or not those workers
+	// have spawned yet, so seed from the resolved block rather than the cache.
+	reserved := make(map[int]bool, len(b.ports().all()))
+	for _, port := range b.ports().all() {
+		reserved[port] = true
+	}
 	if alias := b.currentOllamaHostAlias().Port; alias > 0 {
 		reserved[alias] = true
 	}
@@ -315,7 +320,7 @@ func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string,
 			continue
 		}
 		if current.Running && port == current.EffectiveServerPort {
-			if restart || port == config.ServerPort {
+			if restartingEngine || port == config.ServerPort {
 				continue
 			}
 			return fmt.Errorf("port %d is held by the running %s engine; move the engine or choose another proxy port", port, engine)
@@ -561,7 +566,9 @@ func (b *Broker) applyEngineSettings(ctx context.Context, p settings.Request, ca
 		b.publishSettingsLocked()
 		return record.Receipts[p.RequestID], nil
 	}
-	record.Previous = record.Snapshot.Settings
+	if record.Snapshot.Phase != "failed" {
+		record.Previous = record.Snapshot.Settings
+	}
 	record.Resume = record.Resume || preview.Restart
 	record.Explicit = true
 	record.Snapshot.Settings = preview.Settings
@@ -671,6 +678,23 @@ func (b *Broker) handleSettingsRelay(raw json.RawMessage) {
 				err = fmt.Errorf("unknown settings operation")
 			} else {
 				err = b.rebindSettingsProxy(operation.Engine, operation.Port)
+			}
+		} else if strings.HasPrefix(relay.Method, "settings/") {
+			// A worker reading a node setting (e.g. the engine-manager
+			// checking engine_allow_lan_bind). Forwarded verbatim to
+			// nvpair-node-settings, same as an inbound settings/ request.
+			st := b.getSettings()
+			if st == nil {
+				err = fmt.Errorf("node-settings not available")
+			} else {
+				var res json.RawMessage
+				var rpcErr *RPCError
+				res, rpcErr, err = st.Call(ctx, relay.Method, nil)
+				if rpcErr != nil {
+					err = fmt.Errorf("%s", rpcErr.Message)
+				} else {
+					result = res
+				}
 			}
 		} else {
 			result, err = b.dispatchEngineSettings(ctx, relay.Method, relay.Request, relay.Caller)

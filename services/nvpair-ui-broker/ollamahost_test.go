@@ -17,6 +17,7 @@ import (
 
 	"nvpair-shared/appdir"
 	"nvpair-shared/errors"
+	"nvpair-shared/noderec"
 )
 
 func TestInheritedOllamaHostAlias_ValidatesLoopbackEndpoint(t *testing.T) {
@@ -120,7 +121,7 @@ func TestReservedOllamaHostAliasPort_TracksActiveReservation(t *testing.T) {
 			if tc.lmstudioProxy > 0 {
 				siblings[tc.lmstudioProxy] = fmt.Sprintf("the LM Studio proxy is configured on port %d", tc.lmstudioProxy)
 			}
-			reason := reservedOllamaHostAliasPort(tc.port, enginePorts, siblings)
+			reason := reservedOllamaHostAliasPort(tc.port, enginePorts, siblings, portsForBase(noderec.DefaultPortBase))
 			if tc.wantReasonSubstr == "" {
 				require.Empty(t, reason)
 			} else {

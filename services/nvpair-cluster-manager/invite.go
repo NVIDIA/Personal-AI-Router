@@ -257,11 +257,7 @@ var errPairingAbandoned = errors.New("pairing abandoned: invite is no longer pen
 // its liveness.
 func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uint64) (*pairingSession, string, error) {
 	myAddr := net.JoinHostPort(outboundIP(target), strconv.Itoa(m.port))
-	info, err := m.localPairingInfo(myAddr).toMap()
-	if err != nil {
-		return nil, "", fmt.Errorf("build pairing info: %w", err)
-	}
-	server := newPairingServer(info)
+	server := eapnoob.NewServer(eapnoob.ServerConfig{Dirs: eapnoob.OOBServerToPeer, ServerInfo: m.localPairingInfo(myAddr)}, nil)
 	// Scope the session to the cluster we are inviting into (cid0, captured by
 	// handleInviteNode) so a Completion that lands after we leave/are removed is
 	// discarded by commitPairing's epoch recheck.
@@ -276,8 +272,22 @@ func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uin
 		return sess, "", errPairingClusterGone
 	}
 
+	// The session is registered, so Completion messages can reach the server
+	// while this exchange runs. Hold sess.mu for each server call but never across
+	// the HTTP round trip, which cancel and decline must not wait on.
+	start := func() ([]byte, error) {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return server.Start()
+	}
+	receive := func(in []byte) (eapnoob.Outcome, error) {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return server.Receive(in)
+	}
+
 	client := &http.Client{Timeout: pairingHTTPTimeout}
-	blob, err := server.Start()
+	blob, err := start()
 	if err != nil {
 		return sess, "", fmt.Errorf("server start: %w", err)
 	}
@@ -289,7 +299,7 @@ func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uin
 		if len(respBlob) == 0 {
 			break // joiner reached a terminal state with nothing to send
 		}
-		out, rerr := server.Receive(respBlob)
+		out, rerr := receive(respBlob)
 		if rerr != nil {
 			return sess, "", fmt.Errorf("server receive: %w", rerr)
 		}
@@ -306,16 +316,19 @@ func (m *Manager) runInitialExchange(inviteID, target, cid0 string, sessGen0 uin
 		}
 	}
 
-	if server.State() != eapnoob.StateWaiting {
-		return sess, "", fmt.Errorf("initial exchange ended in state %s, want Waiting", server.State())
-	}
 	pin, noob, err := generatePIN()
 	if err != nil {
 		return sess, "", fmt.Errorf("generate pin: %w", err)
 	}
-	if _, err := server.OOBOutputWith(noob); err != nil {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if server.State() != eapnoob.StateWaiting {
+		return sess, "", fmt.Errorf("initial exchange ended in state %s, want Waiting", server.State())
+	}
+	if err := server.OOBOutputWith(noob); err != nil {
 		return sess, "", fmt.Errorf("inject pin noob: %w", err)
 	}
+	sess.initialDone = true
 	return sess, pin, nil
 }
 
