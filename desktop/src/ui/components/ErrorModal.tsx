@@ -7,6 +7,7 @@ import { DialogHeader } from './DialogHeader'
 import { errorDismissalKey } from '@/ui/utils/error-modal-dismissal'
 import { InlineErrorBanner } from './InlineErrorBanner'
 import { useErrorsStore } from '@/ui/stores/errors.store'
+import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { isEngineType } from '@/shared/utils/engines'
 import type { ServiceError } from '@/shared/types/errors'
@@ -99,7 +100,7 @@ function bannerStatus(severity: ServiceError['severity']): 'info' | 'warning' | 
  * `null` (no button) when the action isn't `retry` or the error lacks the
  * engine/node/model context needed to re-dispatch.
  */
-function buildRetry(error: ServiceError): (() => void) | null {
+function buildRetry(error: ServiceError, isLocalNode: boolean): (() => void) | null {
     if (error.action !== 'retry') return null
     const { engineType, nodeId, operation, modelName } = error
     if (!engineType || !isEngineType(engineType) || !nodeId) return null
@@ -107,6 +108,8 @@ function buildRetry(error: ServiceError): (() => void) | null {
     switch (operation) {
         case 'install':
             return () => engines.install(engineType, nodeId)
+        case 'update':
+            return isLocalNode ? () => engines.update(engineType, nodeId) : null
         case 'uninstall':
             return () => engines.uninstall(engineType, nodeId)
         case 'start':
@@ -163,7 +166,8 @@ function ErrorBanner({
     const showNodePrefix = Boolean(error.nodeId) && !hideNodePrefix
     const displayMessage = formatErrorMessage(error, nodeLabel, showNodePrefix)
     const severity = bannerStatus(error.severity)
-    const retry = buildRetry(error)
+    const isLocalNode = useConnectionStore(state => state.selfId === error.nodeId)
+    const retry = buildRetry(error, isLocalNode)
 
     return (
         <InlineErrorBanner severity={severity} message={displayMessage}>

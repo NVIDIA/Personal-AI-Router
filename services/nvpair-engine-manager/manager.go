@@ -15,6 +15,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/engines"
 	enginesettings "nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
 	"nvpair-shared/reach"
@@ -260,6 +261,16 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 			m.codec.Respond(msg.ID, map[string]any{"engines": m.exec.GetInstalled()})
 		}()
 
+	case "engine:check-updates":
+		var p engineParam
+		if !m.parse(msg, &p) || !m.validUpdateEngine(msg, p.Engine) {
+			return
+		}
+		go func() {
+			update, err := m.exec.CheckEngineUpdate(ctx, p.Engine)
+			m.respondOrErr(msg, map[string]any{"updateAvailable": update}, err)
+		}()
+
 	// Removes the engines PAIR installed. Long-running — each engine goes
 	// through the full uninstall — so it runs off the read loop like the other
 	// lifecycle operations.
@@ -313,7 +324,7 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	case "engine:catalog":
 		go m.runCatalog(ctx, msg)
 
-	case "engine:install", "engine:uninstall", "engine:start", "engine:stop", "engine:restart":
+	case "engine:install", "engine:uninstall", "engine:update", "engine:start", "engine:stop", "engine:restart":
 		go m.runOp(ctx, msg)
 
 	case "engine:set-port":
@@ -449,6 +460,11 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 		}
 	case "engine:uninstall":
 		err = m.exec.Uninstall(ctx, p.Engine)
+	case "engine:update":
+		if !m.validUpdateEngine(msg, p.Engine) {
+			return
+		}
+		err = m.exec.UpdateEngine(ctx, p.Engine)
 	case "engine:start":
 		err = start()
 	case "engine:stop":
@@ -586,6 +602,14 @@ func (m *Manager) applyDiscovery(msg *Message) {
 func (m *Manager) parse(msg *Message, v any) bool {
 	if err := json.Unmarshal(msg.Params, v); err != nil {
 		m.codec.RespondError(msg.ID, -32602, "invalid params: "+err.Error())
+		return false
+	}
+	return true
+}
+
+func (m *Manager) validUpdateEngine(msg *Message, engine string) bool {
+	if _, ok := engines.ByName(engine); !ok {
+		m.codec.RespondError(msg.ID, -32602, fmt.Sprintf("unknown engine %q", engine))
 		return false
 	}
 	return true

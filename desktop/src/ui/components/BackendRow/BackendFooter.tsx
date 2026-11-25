@@ -8,16 +8,13 @@ import { OpenInNew } from '@/ui/components/icons'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import type { PlatformDisplayName } from '@/shared/types/platform'
 import { canAutoInstallBackendForOs } from '@/ui/utils/backend-target-os'
+import { displayEngineVersion } from '@/ui/utils/status'
 
 const INLINE_LINK_STYLE: CSSProperties = {
     alignItems: 'center',
     color: 'var(--color-brand, #76b900)',
     display: 'inline-flex',
     lineHeight: 1
-}
-
-function displayVersion(version: string): string {
-    return version.startsWith('v') ? version : `v${version}`
 }
 
 export function BackendFooter({
@@ -47,11 +44,7 @@ export function BackendFooter({
         window.windowApi.window.openExternal(url)
     }, [])
 
-    const installedVersion = backend.installedVersion
-        ? displayVersion(backend.installedVersion)
-        : backend.updateAvailable
-          ? displayVersion(backend.updateAvailable.currentVersion)
-          : null
+    const installedVersion = backend.installedVersion ?? backend.updateAvailable?.currentVersion
 
     return (
         <Stack gap="2">
@@ -94,7 +87,7 @@ export function BackendFooter({
                     )}
                     {installedVersion && (
                         <Text kind="body/regular/sm" className="text-subtle-color">
-                            {installedVersion}
+                            {displayEngineVersion(installedVersion)}
                         </Text>
                     )}
                 </Flex>

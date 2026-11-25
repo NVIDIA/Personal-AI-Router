@@ -13,6 +13,7 @@ import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
+import { useEngineUpdateAvailableStore } from '@/ui/stores/engine-update-available.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import type { EngineCommandType } from '@/shared/types/engine-api'
 
@@ -92,6 +93,12 @@ export function BackendRow({
         s.getLifecyclePending(nodeId, backend.type)
     )
 
+    const selfId = useConnectionStore(state => state.selfId)
+    const isLocalNode = nodeId === selfId
+    const updateAvailable = useEngineUpdateAvailableStore(state =>
+        isLocalNode ? state.getInfo(nodeId, backend.type) : undefined
+    )
+
     const displayBackend = useMemo((): BackendInfo => {
         // While an optimistic lifecycle command is in flight, show its
         // transitional status so the header spins immediately. Real transition
@@ -99,10 +106,11 @@ export function BackendRow({
         const synthetic = lifecyclePending
             ? syntheticPendingStatus(lifecyclePending, backend.processStatus)
             : null
-        const base: BackendInfo =
-            synthetic && synthetic !== backend.processStatus
-                ? { ...backend, processStatus: synthetic }
-                : backend
+        const base: BackendInfo = {
+            ...backend,
+            processStatus: synthetic ?? backend.processStatus,
+            updateAvailable
+        }
         if (installProgress) {
             return {
                 ...base,
@@ -113,10 +121,7 @@ export function BackendRow({
             }
         }
         return base
-    }, [installProgress, backend, lifecyclePending])
-
-    const selfId = useConnectionStore(state => state.selfId)
-    const isLocalNode = nodeId === selfId
+    }, [installProgress, backend, lifecyclePending, updateAvailable])
 
     // Remote peers may not have polled engine facts yet; refresh status when the
     // accordion opens so LM Studio and other engines are not stuck as Unavailable.
@@ -191,12 +196,6 @@ export function BackendRow({
 
     const content = expanded ? (
         <Stack gap="4" className="max-w-full overflow-hidden pt-4">
-            <BackendUpdateBanner
-                backend={displayBackend}
-                disabled={controlsDisabled || !isLocalNode}
-                onUpdate={handleUpdate}
-            />
-
             {canShowAccordions && (
                 <ModelSection backend={displayBackend} nodeId={nodeId} disabled={isTransitioning} />
             )}
@@ -236,6 +235,11 @@ export function BackendRow({
                         isLocalNode={isLocalNode}
                         targetOs={targetOs}
                         onInstall={handleInstall}
+                    />
+                    <BackendUpdateBanner
+                        backend={displayBackend}
+                        disabled={controlsDisabled || !isLocalNode}
+                        onUpdate={handleUpdate}
                     />
                     {expanded && <Divider />}
                     {content}

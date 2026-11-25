@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it, vi } from 'vitest'
+import type { EngineManagerName, EngineType } from '@/shared/types/engines'
 import type { getEngineHubModels } from '@/electron/service-bridge/model-catalog'
 import type { getModularSupervisor } from '@/electron/service-bridge/modular-supervisor'
 import type { getModularBridgeState } from '@/electron/service-bridge/modular-state'
@@ -11,10 +12,15 @@ type BridgeState = ReturnType<typeof getModularBridgeState>
 
 const mocks = vi.hoisted(() => ({
     state: {
-        getSelfId: vi.fn<BridgeState['getSelfId']>()
+        getSelfId: vi.fn<BridgeState['getSelfId']>(),
+        beginLocalEngineOp: vi.fn<BridgeState['beginLocalEngineOp']>(),
+        clearPendingEngineOp: vi.fn<BridgeState['clearPendingEngineOp']>()
     },
     supervisor: {
-        callProcess: vi.fn<Supervisor['callProcess']>()
+        callProcess: vi.fn<Supervisor['callProcess']>(),
+        hasProcess: vi.fn<Supervisor['hasProcess']>(() => true),
+        sendProcess: vi.fn<Supervisor['sendProcess']>(),
+        reportError: vi.fn<Supervisor['reportError']>()
     }
 }))
 
@@ -32,6 +38,69 @@ vi.mock('@/electron/service-bridge/model-catalog', () => ({
 }))
 
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
+
+describe('local engine update command', () => {
+    it.each<{ engineType: EngineType; engine: EngineManagerName }>([
+        { engineType: 'ollama', engine: 'ollama' },
+        { engineType: 'lm-studio', engine: 'lmstudio' },
+        { engineType: 'llama-cpp', engine: 'llamacpp' },
+        { engineType: 'vllm', engine: 'vllm' }
+    ])('sends one managed update for $engineType as $engine', async ({ engineType, engine }) => {
+        mocks.supervisor.sendProcess.mockClear()
+        mocks.state.getSelfId.mockReturnValue('self')
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'update',
+            engineType,
+            nodeId: 'self'
+        })
+
+        expect(mocks.supervisor.sendProcess).toHaveBeenCalledOnce()
+        expect(mocks.supervisor.sendProcess).toHaveBeenCalledWith(
+            'broker',
+            'engine:update',
+            { engine },
+            expect.any(Function),
+            true
+        )
+    })
+
+    it('retains the local node and UI engine identifier when a managed update is rejected', async () => {
+        mocks.state.getSelfId.mockReturnValue('self')
+        mocks.supervisor.sendProcess.mockImplementationOnce((_name, _method, _params, onError) => {
+            onError?.('update rejected', true)
+        })
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'update',
+            engineType: 'lm-studio',
+            nodeId: 'self'
+        })
+        expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+            'Failed to update lmstudio: update rejected',
+            'error',
+            undefined,
+            {
+                id: 'engine-manager:update-failed:lmstudio',
+                nodeId: 'self',
+                engineType: 'lm-studio',
+                operation: 'update',
+                action: 'retry'
+            }
+        )
+    })
+
+    it('does not dispatch a peer update to the local engine manager', async () => {
+        mocks.supervisor.sendProcess.mockClear()
+        mocks.state.getSelfId.mockReturnValue('self')
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'update',
+            engineType: 'ollama',
+            nodeId: 'peer'
+        })
+
+        expect(mocks.supervisor.sendProcess).not.toHaveBeenCalled()
+        expect(mocks.supervisor.reportError).toHaveBeenCalled()
+    })
+})
 
 describe('manual node removal', () => {
     // The desktop knows a broker node key. Its request must select that key

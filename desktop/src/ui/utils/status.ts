@@ -3,6 +3,11 @@
 
 import type { EngineProcessStatus } from '@/shared/types/engines'
 
+/** Preserve vendor build labels such as llama.cpp's b12345. */
+export function displayEngineVersion(version: string): string {
+    return /^\d+\./.test(version) ? `v${version}` : version
+}
+
 export const statusLabel: Record<EngineProcessStatus, string> = {
     running: 'Running',
     'awaiting-model': 'Select a model',
