@@ -401,11 +401,13 @@ func TestHandleHTTP_ResponsesFailsOverFromOlderEngine(t *testing.T) {
 // reported as a workload like any other inference call.
 func TestHandleHTTP_RoutesDecisionRequestToAModelOwner(t *testing.T) {
 	tc := ollamaCase(t)
+	// Any model the scheduler routes works here; the route, not the model,
+	// is under test. tc.advertisedModel belongs to the non-owner node.
 	const (
-		decisionModel = "clef-flash:9b-q8_0"
-		requestBody   = `{"model":"clef-flash:9b-q8_0","questions":[{"name":"q","type":"choice"}]}`
-		answer        = `{"probabilities":{"new_document":0.9,"same_document":0.1}}`
+		decisionModel = "decider:latest"
+		answer        = `{"probabilities":{"yes":0.9,"no":0.1}}`
 	)
+	requestBody := fmt.Sprintf(`{"model":%q,"questions":[{"name":"q","type":"choice"}]}`, decisionModel)
 	var nonOwnerHits, staleOwnerHits, ownerHits atomic.Int32
 	nonOwner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		nonOwnerHits.Add(1)
@@ -415,7 +417,7 @@ func TestHandleHTTP_RoutesDecisionRequestToAModelOwner(t *testing.T) {
 	staleOwner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		staleOwnerHits.Add(1)
 		w.WriteHeader(http.StatusNotFound)
-		_, err := io.WriteString(w, `{"error":"model 'clef-flash:9b-q8_0' not found"}`)
+		_, err := fmt.Fprintf(w, `{"error":"model '%s' not found"}`, decisionModel)
 		assert.NoError(t, err, "write not-found result")
 	}))
 	defer staleOwner.Close()
