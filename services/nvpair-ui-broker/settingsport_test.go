@@ -160,3 +160,65 @@ func TestBrokerLlamaCPPProxySetPort_PersistsOnlyRequestedFacade(t *testing.T) {
 	assert.Equal(t, "succeeded", record.Snapshot.Phase)
 	assert.Equal(t, before.Revision+1, record.Snapshot.Revision)
 }
+
+// The custom facade's port stays configurable through the existing settings
+// pattern even though nothing is launched behind it: the facade is real, only
+// its backend is external. Mirrors the llama.cpp round trip — the rebind must
+// address exactly the custom facade and journal exactly its record.
+func TestBrokerCustomProxySetPort_PersistsOnlyCustomFacade(t *testing.T) {
+	h := newSettingsHarnessForEngine(t, "custom")
+	before, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "custom"}, "")
+	require.NoError(t, err, "read initial custom settings")
+	otherPorts := make(map[string]int)
+	for _, engine := range []string{"ollama", "lmstudio", "llamacpp"} {
+		_, otherPorts[engine] = h.b.getProxy().Status(engine)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err, "allocate target port")
+	target := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close(), "release target port")
+
+	response := callBrokerPortRequest(t, h.b, "custom-proxy:set-port", settingsJSON(map[string]int{"port": target}))
+	require.Nil(t, response.Error, "set custom proxy port: %v", response.Error)
+	var result struct {
+		Port int `json:"port"`
+	}
+	require.NoError(t, json.Unmarshal(response.Result, &result), "decode port result")
+	assert.Equal(t, target, result.Port)
+	assert.Equal(t, int32(1), h.proxyRebinds.Load(), "proxy rebind count")
+	ready, actual := h.b.getProxy().Status("custom")
+	assert.True(t, ready, "custom facade must be ready")
+	assert.Equal(t, target, actual, "custom facade port")
+	for engine, want := range otherPorts {
+		_, actual := h.b.getProxy().Status(engine)
+		assert.Equal(t, want, actual, "%s facade moved", engine)
+	}
+	path, err := h.b.engineSettingsPath()
+	require.NoError(t, err, "resolve journal path")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "read journal")
+	var records map[string]*engineSettingsRecord
+	require.NoError(t, json.Unmarshal(data, &records), "decode journal")
+	record := records["custom"]
+	require.NotNil(t, record, "persisted custom record")
+	want := before.Settings
+	want.ProxyPort = target
+	assert.True(t, record.Explicit, "persisted proxy-port change must be explicit")
+	assert.Equal(t, want, record.Snapshot.Settings)
+}
+
+// An unmanaged engine kind has no engine-side process, so there is no server
+// port to move: only the facade's own port is configurable. Without this
+// refusal, a stale or scripted "engine:set-port {\"engine\":\"custom\"}"
+// (the shape used for managed engines, e.g. by an older TUI that enumerated
+// the engine set) would spend a full settings apply — and could relocate an
+// unrelated process onto the endpoint's own port.
+func TestEngineSetPort_RefusesUnmanagedEngine(t *testing.T) {
+	h := newSettingsHarnessForEngine(t, "custom")
+	response := callBrokerPortRequest(t, h.b, "engine:set-port",
+		settingsJSON(map[string]any{"engine": "custom", "port": 25123}))
+	require.NotNil(t, response.Error, "unmanaged engine:set-port must be refused")
+	assert.Equal(t, -32602, response.Error.Code)
+	assert.Contains(t, response.Error.Message, "unmanaged")
+	assert.Equal(t, int32(0), h.proxyRebinds.Load(), "refused request rebound the proxy")
+}

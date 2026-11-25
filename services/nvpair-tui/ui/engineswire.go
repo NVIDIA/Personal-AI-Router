@@ -262,6 +262,20 @@ func modelRequest(node, engine string, act modelAction, model string) (string, m
 // modelCmd issues a model operation against a node.
 func modelCmd(client *rpc.Client, node, engine string, act modelAction, model string) tea.Cmd {
 	what := act.what + " " + model
+	// An unmanaged engine kind has no model operations at either end of its
+	// wire: a Custom endpoint serves models its operator deployed, and the
+	// remote methods relay these same four verbs by name alone, so nothing
+	// on the remote path would notice it was speaking a vocabulary the
+	// target does not have. Refusing by kind, before both paths, keeps a
+	// Custom-attributed model from dialling a whole relay chain for a verb
+	// that cannot mean anything there - and keeps the answer in words the
+	// operator can act on instead of a missing-wire note three hops away.
+	if e, known := engines.ByName(engine); known && e.Unmanaged {
+		return func() tea.Msg {
+			return engineOpMsg{what: what, engine: engine,
+				err: errors.New("custom endpoints manage their own models")}
+		}
+	}
 	method, params, err := modelRequest(node, engine, act, model)
 	if err != nil {
 		return func() tea.Msg { return engineOpMsg{what: what, engine: engine, err: err} }

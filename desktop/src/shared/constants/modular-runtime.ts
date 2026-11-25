@@ -85,6 +85,14 @@ export const MODULAR_CANCEL_PULL_TIMEOUT_MS = 90_000
 // budgeted for minutes of engine restart, and the modal should not wait that out.
 export const MODULAR_CATALOG_CALL_TIMEOUT_MS = 30_000
 
+// Upper bound for a custom-endpoint request addressed to a paired peer. The
+// broker relays it to the local engine-manager, which dials the peer's pinned
+// control surface with a 30-second budget that already covers the whole round
+// trip (peer handler plus the owner's broker hop), so this envelope has to sit
+// outside that — otherwise a slow but healthy peer reads as a desktop timeout
+// while the edit is still running, and the UI cannot tell the two apart.
+export const MODULAR_CUSTOM_RELAY_CALL_TIMEOUT_MS = 45_000
+
 // Poll interval for `cluster:invite-status` while a pairing handshake is open.
 // Also drives the pending-invite reconciliation sweep, the backstop for a missed
 // receiver-side `cluster:invite-canceled` / `cluster:invite-expired` push.

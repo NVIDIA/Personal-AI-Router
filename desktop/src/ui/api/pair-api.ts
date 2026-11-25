@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { type IEngineApi, createEngineApi } from '@/ui/api/engine-api'
+import { type ICustomEndpointsApi, createCustomEndpointsApi } from '@/ui/api/custom-endpoints-api'
 import type { PreloadServiceTransport as ServiceTransport } from '@/shared/types/service-bridge'
 import type {
     AvailableNode,
@@ -119,6 +120,7 @@ export interface IPairApi {
     cluster: IClusterApi
     discovery: IDiscoveryApi
     engines: IEngineApi
+    customEndpoints: ICustomEndpointsApi
     workloads: IWorkloadsApi
     errors: IErrorsApi
     metrics: IMetricsApi
@@ -169,6 +171,7 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
             onNodesChanged: cb => transport.subscribePush('discovery:nodes-changed', cb)
         },
         engines: createEngineApi(transport),
+        customEndpoints: createCustomEndpointsApi(transport),
         workloads: {
             getInitial: () => transport.invoke('workloads:get-initial'),
             onUpsert: cb => transport.subscribePush('workloads:upsert', cb),

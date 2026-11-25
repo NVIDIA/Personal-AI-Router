@@ -51,7 +51,10 @@ const proxyPorts: Record<EngineType, number | null> = {
     ollama: 11434,
     'lm-studio': 1234,
     'llama-cpp': 8080,
-    vllm: 8000
+    vllm: 8000,
+    // The fake broker fronts no custom endpoints, so the Custom facade stays
+    // unreported — `null` is "withheld", not a guessed port.
+    custom: null
 }
 
 /** Model inventory each probe returns. Mutable so a test can return none. */
