@@ -19,6 +19,7 @@ type modelInventory struct {
 	byEngine           map[string][]string
 	loadedByEngine     map[string][]string
 	downloadedByEngine map[string][]string
+	aliases            []noderec.ModelAlias
 	certificate        *x509.Certificate
 }
 
@@ -28,6 +29,7 @@ func (inv modelInventory) applyTo(node *noderec.DirectoryNode) {
 	node.ModelsByEngine = inv.byEngine
 	node.LoadedByEngine = inv.loadedByEngine
 	node.DownloadedByEngine = inv.downloadedByEngine
+	node.Aliases = inv.aliases
 }
 
 // hostKey identifies address memory for one record and service. Node-info uses

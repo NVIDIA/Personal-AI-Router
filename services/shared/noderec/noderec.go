@@ -372,6 +372,42 @@ const (
 	// from it (stateless + self-correcting) rather than applying per-node deltas,
 	// matching how the client-facing discovery:nodes-changed already works.
 	NotifyNodes = "discovery:nodes"
+
+	// MethodSubscribePeerAliases is the process-scoped counterpart of
+	// MethodSubscribe: a proxy process asks once for the cluster alias feed —
+	// peer-announced model aliases independent of any engine's routing overlay.
+	// A routing subscription is per facade because each facade dials one
+	// engine; an alias is a cluster-wide synonym for a model, so it has no
+	// engine to be scoped to, and a feed filtered by engine service would drop
+	// every alias announced by a node that fronts no engine.
+	// Params are SubscribeParams; snapshots arrive as NotifyPeerAliases.
+	MethodSubscribePeerAliases = "cluster:subscribe-aliases"
+
+	// NotifyPeerAliases is the broker relay -> proxy process push of the full
+	// directory snapshot behind that subscription: the same GetNodesResult
+	// shape as NotifyNodes, delivered once per process rather than once per
+	// facade. The receiving proxy filters it to pinned and trusted peers; the
+	// relay itself applies only the subscription's service filter.
+	NotifyPeerAliases = "cluster:peer-aliases"
+
+	// Peer model alias writes: editing another node's model aliases from this
+	// one. One node's alias document belongs to that node, so this is not a
+	// shared-registry edit — it is a document handed to the owning node, whose
+	// own nvpair-node-settings validates it, applies it, and is the only thing
+	// that can say whether it did.
+	//
+	// The three frames on the workload-manager link are notifications
+	// correlated by a requestId, because that link carries no id-bearing
+	// requests in either direction (spec 7.1). The names live here because the
+	// broker relay and nvpair-workload-manager are two modules that must agree
+	// on all of them: the pair that misses a rename is a write that never gets
+	// an answer.
+	MethodSetNodeModelAliases = "settings/set-node-model-aliases"     // desktop -> broker: write this list, wherever it belongs
+	MethodReplacePeerAliases  = "settings/replace-peer-model-aliases" // broker -> workload-manager, on the node asking
+	MethodPeerAliasesResult   = "settings/peer-model-aliases-result"  // workload-manager -> broker: the owning node's verdict
+	MethodAliasWrite          = "settings/replace-model-aliases"      // node -> owning node, over cluster mTLS
+	MethodApplyAliases        = "settings/apply-model-aliases"        // workload-manager -> broker, on the node that owns the list
+	MethodApplyAliasesResult  = "settings/apply-model-aliases-result" // broker -> workload-manager: the local settings verdict
 )
 
 // RegisterParams is the canonical discovery:register / update-txt payload: a
@@ -664,7 +700,38 @@ type DirectoryNode struct {
 	// not read. Enriched from engine-manager's em /v1/models downloadedByEngine
 	// field; omitted when no engine reports one.
 	DownloadedByEngine map[string][]string `json:"downloadedByEngine,omitempty"`
-	LastSeen           int64               `json:"lastSeen"` // Unix seconds
+	// Aliases are the cluster model aliases configured on the node announcing
+	// this one: caller-side synonyms for another model's wire name. They ride
+	// the same enrichment path as ModelsByEngine (peer reads engine-manager's
+	// em /v1/models modelAliases field, where that node's broker placed the
+	// configured list), so the same pinned-mTLS gate that admits the model
+	// inventory admits the aliases, and an old-build peer that reports none
+	// simply contributes none. A reading node's cluster router resolves each
+	// alias's target against its own catalog — a synonym whose target no live
+	// endpoint serves is inert there, never misrouted — so the document that
+	// travels names a model, not the machines holding it.
+	//
+	// A nil list means the announcing node never reported a document (an
+	// old-build peer, or a model sweep that has not answered yet); an empty one
+	// is its answer that it configures none. The two are deliberately not
+	// collapsed, because the editor downstream replaces the whole document it
+	// shows and will only offer that over a stated empty, never over silence.
+	// Hence no omitempty: the empty document has to survive the hop.
+	Aliases  []ModelAlias `json:"aliases"`
+	LastSeen int64        `json:"lastSeen"` // Unix seconds
+}
+
+// ModelAlias is one announced cluster model alias: a caller-side name and the
+// model wire name it stands for. There is deliberately no provider list. Each
+// reading router derives the providers by resolving the target through its own
+// catalog, so one alias written on one node routes everywhere it is heard, and
+// two nodes whose catalogs hold that model on different machines get different
+// — and locally correct — answers from the same two strings. Carrying the pair
+// verbatim means a reading router consumes a peer's aliases with no second
+// translation to drift.
+type ModelAlias struct {
+	Name  string `json:"name"`
+	Model string `json:"model"`
 }
 
 // Equals compares directory state, including hardware identity and capacity,
@@ -695,6 +762,7 @@ func (n DirectoryNode) Equals(other DirectoryNode) bool {
 		maps.EqualFunc(n.LoadedByEngine, other.LoadedByEngine, equalSlice[string]) &&
 		(n.DownloadedByEngine == nil) == (other.DownloadedByEngine == nil) &&
 		maps.EqualFunc(n.DownloadedByEngine, other.DownloadedByEngine, equalSlice[string]) &&
+		equalSlice(n.Aliases, other.Aliases) &&
 		n.LastSeen == other.LastSeen
 }
 

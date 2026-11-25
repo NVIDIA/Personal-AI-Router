@@ -46,6 +46,18 @@ export interface AvailableNode {
      * cannot be invited into another, so invite UI treats it as non-invitable.
      */
     clustered: boolean
+    /**
+     * That node's own cluster model alias document, as it announced it: the list
+     * its owner edits, not the merged list this computer routes by
+     * (`cluster:get-router-aliases`). It is announced by the node's engine
+     * manager, so it survives that node's engines being stopped.
+     *
+     * Absent means the node has not reported a document at all — an older build,
+     * or a model read that has not answered — which is deliberately not the same
+     * as an empty list. The editor behind this replaces the whole list it shows,
+     * so it will edit a stated empty and never a silence.
+     */
+    aliases?: ModelAlias[]
 }
 
 /**
@@ -149,4 +161,41 @@ export interface ClusterInfo {
 export interface ClusterIdentityPayload {
     clusterId: string | null
     clusterFriendlyName: string
+}
+
+/**
+ * One configured cluster model alias: a caller-side name and the model that
+ * name stands for. Nothing here names a machine or an engine — every
+ * computer's cluster router derives the providers from what its own catalog
+ * sees, which is what lets a synonym typed on one machine route on another.
+ *
+ * The same two fields are what `nvpair-node-settings` stores (under
+ * `model_aliases`) and what travels to the cluster router, so no layer
+ * translates a spelling any more. The service bridge still decodes instead of
+ * forwarding raw JSON (`service-bridge/model-aliases.ts`).
+ */
+export interface ModelAlias {
+    name: string
+    model: string
+}
+
+/**
+ * One row of the cluster alias view: what this computer's cluster router
+ * actually routes by, with the origin of the definition this row carries. A
+ * name several machines define and can serve appears once per machine, each
+ * row holding that machine's own synonym and the machine that wrote it,
+ * because all of them answer for the name. The pair is the same synonym a
+ * `ModelAlias` carries; the origin says where it was written, which is the
+ * machine its editor lives on — write authority stays with the writer, so a
+ * peer's entry is shown read-only here.
+ *
+ * `originNode` and `originHost` are empty for this node's own configured
+ * entries. `originNode` is the peer's routing id (for keys and dedupe);
+ * `originHost` is its display name, the one an operator can act on.
+ */
+export interface ClusterModelAliasViewEntry {
+    name: string
+    model: string
+    originNode: string
+    originHost: string
 }

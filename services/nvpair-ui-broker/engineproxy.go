@@ -659,6 +659,160 @@ func (b *Broker) relayToEngineProxy(profile engineProxyProfile, msg *Message) {
 	}
 }
 
+// liveProxyProcess returns a handle on the proxy child while one is running,
+// and nil otherwise.
+//
+// It scans the engine table instead of using getProxy because what it is asked
+// about belongs to the process rather than to one facade: getProxy resolves
+// Ollama's handle, so a machine with Ollama switched off reports "no proxy"
+// even while its vLLM facade — and with it the cluster endpoint — is up.
+//
+// One process hosts every facade, so the first live handle is that process.
+// That is a fact about today's process model, not a law: were a second proxy
+// ever started, this read would have to ask each one and merge, because only
+// the child given --cluster-router knows whether it bound.
+func (b *Broker) liveProxyProcess() *proxyProcess {
+	for _, profile := range engineProxyProfiles {
+		if p := b.engineProxyHandle(profile); p != nil {
+			return p
+		}
+	}
+	return nil
+}
+
+// handleRouterStatus answers the cluster endpoint read by relaying it to the
+// proxy child, which reports what it actually bound.
+//
+// It runs on its own goroutine the way engine:set-port and the engine-settings
+// cases do: the wait belongs to a subprocess (proxyCallTimeout to find out it
+// has wedged) and the pump this would otherwise run on serves every other
+// request that client has queued behind it.
+//
+// An absent endpoint is a result rather than an error, in both of its forms.
+// No proxy is answered here; a proxy with no router answers from the child with
+// {"running":false,"port":0}. Both are ordinary configurations, and the desktop
+// lists neither — a failure there would read as a broken endpoint on a machine
+// that is working as configured. A call that fails or times out is the odd one
+// out: the state is genuinely unknown, so that is what goes back as an error.
+func (b *Broker) handleRouterStatus(msg *Message) {
+	proxy := b.liveProxyProcess()
+	if proxy == nil {
+		if err := b.codec.Respond(msg.ID, RouterStatusResult{}); err != nil {
+			log.Printf("failed to respond to router/status: %v", err)
+		}
+		return
+	}
+
+	result, rpcErr, err := proxy.Call(context.Background(), "router/status", nil)
+	switch {
+	case err != nil:
+		slog.Warn("cluster router status unavailable", "err", err)
+		if writeErr := b.codec.RespondError(msg.ID, -32000, "cluster router status unavailable: "+err.Error()); writeErr != nil {
+			log.Printf("failed to report a failed router/status read: %v", writeErr)
+		}
+	case rpcErr != nil:
+		slog.Warn("cluster router status rejected", "code", rpcErr.Code, "msg", rpcErr.Message)
+		if writeErr := b.codec.RespondError(msg.ID, rpcErr.Code, rpcErr.Message); writeErr != nil {
+			log.Printf("failed to relay router/status error: %v", writeErr)
+		}
+	default:
+		if writeErr := b.codec.Respond(msg.ID, result); writeErr != nil {
+			log.Printf("failed to relay router/status result: %v", writeErr)
+		}
+	}
+}
+
+// handleRouterSetEnabled relays the live endpoint write to the proxy child,
+// which owns the bind.
+//
+// Both directions stay opaque where they can. The request crosses untouched:
+// {enabled,port} is a desktop-and-child contract, and the broker has no
+// endpoint state to reconcile it against. The reply crosses as the child
+// wrote it, because what the child bound is the answer the endpoint card
+// prints — a refused port keeps its code and reason, and flattening them
+// into a success shape or broker prose would blur "someone else's server has
+// that port" into "the endpoint is off". Only the running flag is read here,
+// and only to decide whether aliases should follow.
+//
+// When the exchange ends with the endpoint up, the configured alias document
+// is couriered to the child before the client is answered: an endpoint
+// without aliases is a nameless cluster, and the desktop must not be told
+// "on" over a child that cannot yet route a single configured name. That is
+// a second subprocess wait on the same exchange, hence the own-goroutine
+// dispatch. A disable, a reply of running:false, and any failure courier
+// nothing — no endpoint means nothing to route.
+func (b *Broker) handleRouterSetEnabled(msg *Message) {
+	proxy := b.liveProxyProcess()
+	if proxy == nil {
+		// Same contract as the reads: no proxy is a configuration, not a
+		// failure — the machine has no endpoint, and says so.
+		if err := b.codec.Respond(msg.ID, RouterStatusResult{}); err != nil {
+			log.Printf("failed to respond to router/set-enabled: %v", err)
+		}
+		return
+	}
+
+	result, rpcErr, err := proxy.Call(context.Background(), "router/set-enabled", msg.Params)
+	switch {
+	case err != nil:
+		slog.Warn("cluster endpoint change unavailable", "err", err)
+		if writeErr := b.codec.RespondError(msg.ID, -32000, "cluster endpoint change unavailable: "+err.Error()); writeErr != nil {
+			log.Printf("failed to report a failed router/set-enabled write: %v", writeErr)
+		}
+	case rpcErr != nil:
+		slog.Warn("cluster endpoint change rejected", "code", rpcErr.Code, "msg", rpcErr.Message)
+		if writeErr := b.codec.RespondError(msg.ID, rpcErr.Code, rpcErr.Message); writeErr != nil {
+			log.Printf("failed to relay router/set-enabled error: %v", writeErr)
+		}
+	default:
+		var status RouterStatusResult
+		if json.Unmarshal(result, &status) == nil && status.Running {
+			b.syncClusterModelAliasesToProxy(proxy)
+		}
+		if writeErr := b.codec.Respond(msg.ID, result); writeErr != nil {
+			log.Printf("failed to relay router/set-enabled result: %v", writeErr)
+		}
+	}
+}
+
+// handleRouterAliases answers the cluster alias view read by relaying it to the
+// proxy child, which owns the merged view (configured aliases plus the relay-fed
+// peer feed) and annotates each name with its origin.
+//
+// Same shape and same reasoning as handleRouterStatus: its own goroutine,
+// because the wait belongs to a subprocess; no proxy is answered with an empty
+// view rather than an error, since a machine whose proxy is down has no view
+// to show and that is a state, not a failure. The result crosses untyped
+// because the broker has no opinion about alias rows — the child's reply goes
+// to the desktop verbatim, with no middle shape to drift.
+func (b *Broker) handleRouterAliases(msg *Message) {
+	proxy := b.liveProxyProcess()
+	if proxy == nil {
+		if err := b.codec.Respond(msg.ID, RouterAliasesResult{Aliases: []json.RawMessage{}}); err != nil {
+			log.Printf("failed to respond to router/get-aliases: %v", err)
+		}
+		return
+	}
+
+	result, rpcErr, err := proxy.Call(context.Background(), "router/get-aliases", nil)
+	switch {
+	case err != nil:
+		slog.Warn("cluster alias view unavailable", "err", err)
+		if writeErr := b.codec.RespondError(msg.ID, -32000, "cluster alias view unavailable: "+err.Error()); writeErr != nil {
+			log.Printf("failed to report a failed router/get-aliases read: %v", writeErr)
+		}
+	case rpcErr != nil:
+		slog.Warn("cluster alias view rejected", "code", rpcErr.Code, "msg", rpcErr.Message)
+		if writeErr := b.codec.RespondError(msg.ID, rpcErr.Code, rpcErr.Message); writeErr != nil {
+			log.Printf("failed to relay router/get-aliases error: %v", writeErr)
+		}
+	default:
+		if writeErr := b.codec.Respond(msg.ID, result); writeErr != nil {
+			log.Printf("failed to relay router/get-aliases result: %v", writeErr)
+		}
+	}
+}
+
 // mustEngineProxyProfile resolves an engine id the broker itself names. A miss
 // means the shared table and this one disagree, which is a build-time mistake
 // rather than a runtime condition, so it panics at init rather than degrading

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,6 +74,41 @@ type Settings struct {
 	// reachable beyond loopback. Read live by the engine-manager on
 	// every start, so no restart is needed after a change.
 	EngineAllowLANBind bool `json:"engine_allow_lan_bind"`
+
+	// ModelAliases are this node's caller-side model-name synonyms for the
+	// cluster router: each entry pairs a name a client may use with the
+	// model wire name it stands for, so an alias is never a promise of
+	// capacity, only another spelling of real capacity. It names no node and
+	// no engine — which machine answers is decided per computer from what
+	// that computer's catalog sees (D10). The router resolves an alias only
+	// after native names and engine conventions miss (D1), and it resolves
+	// the target rather than guessing at one: an alias whose target no live
+	// endpoint serves is inert, never misrouted. The setter pushes
+	// connection/cluster-model-aliases so the broker can re-point the
+	// router without the router polling.
+	//
+	// The JSON key changed with the shape, cluster_model_aliases →
+	// model_aliases, rather than being reused: a document left over from the
+	// provider-citing shape then sits unread under a key nothing reads
+	// instead of being misread as a list of synonyms.
+	//
+	// No `omitempty`, because the absence of a document and an empty one are
+	// different answers and this file is where they are kept: a node nobody
+	// has opened the editor on stores `null`, a node whose operator saved an
+	// empty list stores `[]`. Dropping a deliberate empty list on the way to
+	// disk would turn the second into the first at the next restart.
+	ModelAliases []ModelAlias `json:"model_aliases"`
+}
+
+// ModelAlias is one configured alias: a caller-side name and the model wire
+// name it stands for. Providers are deliberately absent; each computer's
+// cluster router derives them from its own catalog, which is what lets one
+// alias written here route on a machine this one knows nothing about. The
+// same two fields travel over the wire, so the broker forwards this shape
+// unchanged.
+type ModelAlias struct {
+	Name  string `json:"name"`
+	Model string `json:"model"`
 }
 
 func defaultSettings() Settings {
@@ -115,6 +151,17 @@ type ClusterIdentityParams struct {
 // added without breaking existing consumers.
 type ClusterAutoSyncParams struct {
 	Value bool `json:"value"`
+}
+
+// ClusterModelAliasesParams is the payload of the
+// connection/cluster-model-aliases notification. Same change-only lifecycle
+// as the other cluster pushes: Run() does not emit it on startup; the
+// manager pushes one frame after every successful
+// settings/set-cluster-model-aliases. The broker is the operational
+// consumer — it forwards the list to the cluster router — and the UI
+// consumer of a settings change is already holding the list it just set.
+type ClusterModelAliasesParams struct {
+	Aliases []ModelAlias `json:"aliases"`
 }
 
 type Manager struct {
@@ -168,6 +215,15 @@ func (m *Manager) emitClusterAutoSync() error {
 	v := m.settings.ClusterAutoSync
 	m.mu.RUnlock()
 	return m.codec.Notify("connection/cluster-auto-sync", ClusterAutoSyncParams{Value: v})
+}
+
+// emitClusterModelAliases sends connection/cluster-model-aliases with the
+// current alias list. Same lifecycle conventions as emitClusterAutoSync.
+func (m *Manager) emitClusterModelAliases() error {
+	m.mu.RLock()
+	aliases := m.settings.ModelAliases
+	m.mu.RUnlock()
+	return m.codec.Notify("connection/cluster-model-aliases", ClusterModelAliasesParams{Aliases: aliases})
 }
 
 // load reads the settings file from disk and merges it into
@@ -311,6 +367,61 @@ type boolValueParams struct {
 
 type stringValueParams struct {
 	Value *string `json:"value"`
+}
+
+// modelAliasesParams is the setter shape for the alias list. The pointer
+// distinguishes "absent" (malformed request) from "empty" (a deliberate
+// clear-all), the same way boolValueParams distinguishes absent from false.
+type modelAliasesParams struct {
+	Aliases *[]ModelAlias `json:"aliases"`
+}
+
+// validateModelAliases enforces the shape an alias must have to mean
+// anything: a name, a target that is not that same name, and no entry whose
+// target is another entry's name. Neither field is accepted padded. Whether the
+// target names a model that exists anywhere is deliberately not checked — that
+// answer lives in the cluster's catalogs, and an alias that resolves nowhere is
+// inert rather than a guess, so a whitelist here would only drift from the
+// models that actually exist. A padded field is different: whitespace is
+// invisible, so that row can never be typed by hand nor repaired by waiting for
+// a model to appear. A chain is refused because a synonym stands for a model:
+// two hops read as a typo, and the router would not follow the second hop
+// anyway.
+func validateModelAliases(aliases []ModelAlias) error {
+	names := make(map[string]bool, len(aliases))
+	for i, alias := range aliases {
+		name := strings.TrimSpace(alias.Name)
+		if name == "" {
+			return fmt.Errorf("aliases[%d]: name must not be empty", i)
+		}
+		// Refused rather than trimmed on the way in: a name is matched against
+		// what a caller types, so a padded one is a row that shows everywhere and
+		// answers nothing, and silently storing the trimmed form would leave the
+		// operator looking at a row that is not the one they typed.
+		if alias.Name != name {
+			return fmt.Errorf("aliases[%d] (%s): name must not have leading or trailing spaces; the cluster endpoint matches the name a caller types exactly, so a padded name is a row that answers nothing", i, alias.Name)
+		}
+		if names[alias.Name] {
+			return fmt.Errorf("aliases[%d]: duplicate name %q", i, alias.Name)
+		}
+		names[alias.Name] = true
+	}
+	for i, alias := range aliases {
+		target := strings.TrimSpace(alias.Model)
+		if target == "" {
+			return fmt.Errorf("aliases[%d] (%s): model must name the model this alias stands for; an alias with no target is not an alias, it is a typo", i, alias.Name)
+		}
+		if alias.Model != target {
+			return fmt.Errorf("aliases[%d] (%s): model %q must not have leading or trailing spaces; an engine is asked for that name exactly as stored, so a padded target resolves nowhere", i, alias.Name, alias.Model)
+		}
+		if target == alias.Name {
+			return fmt.Errorf("aliases[%d] (%s): model must name a different model; an alias that stands for itself routes nothing", i, alias.Name)
+		}
+		if names[target] {
+			return fmt.Errorf("aliases[%d] (%s): model %q is another alias's name; an alias stands for a model, not for another alias", i, alias.Name, target)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) handleMessage(msg *Message) {
@@ -489,6 +600,39 @@ func (m *Manager) handleMessage(msg *Message) {
 		m.settings = newSettings
 		m.mu.Unlock()
 		m.codec.Respond(msg.ID, map[string]bool{"ok": true})
+
+	case "settings/get-cluster-model-aliases":
+		m.mu.RLock()
+		aliases := m.settings.ModelAliases
+		m.mu.RUnlock()
+		m.codec.Respond(msg.ID, ClusterModelAliasesParams{Aliases: aliases})
+
+	case "settings/set-cluster-model-aliases":
+		var p modelAliasesParams
+		if err := json.Unmarshal(msg.Params, &p); err != nil || p.Aliases == nil {
+			m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"aliases": [{"name": ..., "model": ...}]}`)
+			return
+		}
+		if err := validateModelAliases(*p.Aliases); err != nil {
+			m.codec.RespondError(msg.ID, -32602, err.Error())
+			return
+		}
+		m.mu.RLock()
+		newSettings := m.settings
+		m.mu.RUnlock()
+		newSettings.ModelAliases = *p.Aliases
+		if err := m.saveSettings(newSettings); err != nil {
+			slog.Error("failed to persist cluster-model-aliases", "err", err)
+			m.codec.RespondError(msg.ID, -32603, "failed to persist setting: "+err.Error())
+			return
+		}
+		m.mu.Lock()
+		m.settings = newSettings
+		m.mu.Unlock()
+		m.codec.Respond(msg.ID, map[string]bool{"ok": true})
+		if err := m.emitClusterModelAliases(); err != nil {
+			slog.Warn("failed to emit cluster-model-aliases notification after set", "err", err)
+		}
 
 	case "shutdown":
 		if err := m.codec.Respond(msg.ID, nil); err != nil {

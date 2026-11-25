@@ -9,6 +9,7 @@ import {
     Check as LucideCheck,
     ChevronDown,
     ChevronRight,
+    CircleHelp as LucideCircleHelp,
     CirclePlus,
     Copy,
     Download as LucideDownload,
@@ -17,9 +18,11 @@ import {
     Filter,
     Globe,
     Minus,
+    Route as LucideRoute,
     Search as LucideSearch,
     Settings,
     Square as LucideSquare,
+    Tag as LucideTag,
     X,
     type LucideProps
 } from 'lucide-react'
@@ -47,6 +50,8 @@ export const ArrowDownward = appIcon(ArrowDown)
 export const ArrowUpward = appIcon(ArrowUp)
 export const BarChartOutlined = appIcon(ChartNoAxesColumn)
 export const Check = appIcon(LucideCheck)
+// A job no engine on this machine claims. See EngineIcon's routing marks.
+export const CircleHelp = appIcon(LucideCircleHelp)
 export const Close = appIcon(X)
 export const ContentCopy = appIcon(Copy)
 export const Square = appIcon(LucideSquare)
@@ -58,8 +63,12 @@ export const Minimize = appIcon(Minus)
 export const MoreHoriz = appIcon(Ellipsis)
 export const OpenInNew = appIcon(ExternalLink)
 export const Public = appIcon(Globe)
+export const Route = appIcon(LucideRoute)
 export const Search = appIcon(LucideSearch)
 export const SettingsOutlined = appIcon(Settings)
+// A name standing in for something else: the node card's model alias section.
+// Matches the Tag glyph in the KUI icon catalogue.
+export const Tag = appIcon(LucideTag)
 
 /**
  * Classic Windows "restore down" glyph (a front square with the back square's

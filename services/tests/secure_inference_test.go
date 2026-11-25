@@ -60,13 +60,14 @@ type proxyProc struct {
 // startProxyProc launches ollama-proxy with the given cluster dir on a fresh
 // port and blocks until it reports ready. Its persisted-port store is isolated
 // into a temp config dir so the test never reads or writes the developer's real
-// config.
-func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc {
+// config. extraArgs join the process-scoped argv (e.g. --cluster-router).
+func startProxyProc(t *testing.T, clusterDir string, listenPort int, extraArgs ...string) *proxyProc {
 	t.Helper()
 	cfg := t.TempDir()
 	// The engine and its port arrive over facade/enable below; only the cluster
 	// dir is process-scoped enough to stay on argv.
-	cmd := exec.Command(proxyBin, "--cluster-dir", clusterDir)
+	args := append([]string{"--cluster-dir", clusterDir}, extraArgs...)
+	cmd := exec.Command(proxyBin, args...)
 	cmd.Env = append(os.Environ(),
 		"HOME="+cfg, "XDG_CONFIG_HOME="+cfg, "APPDATA="+cfg, "LOCALAPPDATA="+cfg,
 	)

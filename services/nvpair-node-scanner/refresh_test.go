@@ -366,6 +366,58 @@ func TestRefreshLoadedOnlyChange_ReportsChange(t *testing.T) {
 	assert.False(t, d.refreshNodeModels(target), "an identical loaded set should not report a change")
 }
 
+// The announced alias list converges the same way the model lists do: an
+// alias configured on the announcing node arrives inside the same /v1/models
+// body, and an alias-only edit must count as a change so the new list travels
+// to this node's routers on the sweep that noticed it, not on the next
+// coincidental model change.
+func TestRefresh_PopulatesConfiguredAliasesFromAnnouncement(t *testing.T) {
+	d := newRefreshTestDaemon()
+	_, port := startModelsStub(t, http.StatusOK, map[string]any{
+		"models":         []string{"llama3:8b"},
+		"modelsByEngine": map[string][]string{"ollama": {"llama3:8b"}},
+		"modelAliases": []map[string]string{{
+			"name": "quick-chat", "model": "qwen/qwen3.6-35b-a3b",
+		}},
+	})
+	target := seedEMNode(d, "peer-A", "127.0.0.1", port)
+
+	require.True(t, d.refreshNodeModels(target), "an announced alias list is a change to a directory entry that had none")
+	got, _ := d.dir.get("peer-A")
+	require.Len(t, got.Aliases, 1, "Aliases")
+	assert.Equal(t, noderec.ModelAlias{Name: "quick-chat", Model: "qwen/qwen3.6-35b-a3b"}, got.Aliases[0])
+}
+
+func TestRefreshAliasOnlyChange_ReportsChange(t *testing.T) {
+	d := newRefreshTestDaemon()
+	stub, port := startModelsStub(t, http.StatusOK, map[string]any{
+		"models":         []string{"a", "b"},
+		"modelsByEngine": map[string][]string{"ollama": {"a", "b"}},
+		"modelAliases": []map[string]string{{
+			"name": "quick-chat", "model": "a",
+		}},
+	})
+	target := seedEMNode(d, "peer-N", "127.0.0.1", port)
+	require.True(t, d.refreshNodeModels(target), "initial populate should report a change")
+
+	// Same model list; the alias now stands for a different model.
+	stub.set(http.StatusOK, map[string]any{
+		"models":         []string{"a", "b"},
+		"modelsByEngine": map[string][]string{"ollama": {"a", "b"}},
+		"modelAliases": []map[string]string{{
+			"name": "quick-chat", "model": "b",
+		}},
+	})
+	require.True(t, d.refreshNodeModels(target), "an alias edit should report a change even when every model list is unchanged")
+	got, _ := d.dir.get("peer-N")
+	require.Len(t, got.Aliases, 1)
+	assert.Equal(t, "b", got.Aliases[0].Model, "Aliases after edit")
+
+	// Re-serving the identical list is not a change; a sweep must not push the
+	// same directory entry over and over.
+	assert.False(t, d.refreshNodeModels(target), "an identical alias list should not report a change")
+}
+
 // A failed refresh must not clear the last accepted loaded-model inventory.
 func TestRefreshModels_RetainsLoadedModelsAfterFetchFailure(t *testing.T) {
 	d := newRefreshTestDaemon()

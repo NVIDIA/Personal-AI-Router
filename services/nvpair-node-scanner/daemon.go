@@ -1182,10 +1182,11 @@ func (d *daemon) fetchModels(ip string, port int, clusterUUID string) (modelInve
 		return modelInventory{}, false
 	}
 	var body struct {
-		Models             []string            `json:"models"`
-		ModelsByEngine     map[string][]string `json:"modelsByEngine"`
-		LoadedByEngine     map[string][]string `json:"loadedByEngine"`
-		DownloadedByEngine map[string][]string `json:"downloadedByEngine"`
+		Models             []string             `json:"models"`
+		ModelsByEngine     map[string][]string  `json:"modelsByEngine"`
+		LoadedByEngine     map[string][]string  `json:"loadedByEngine"`
+		DownloadedByEngine map[string][]string  `json:"downloadedByEngine"`
+		ModelAliases       []noderec.ModelAlias `json:"modelAliases"`
 	}
 	reader := io.LimitReader(resp.Body, modelsMaxResponseBytes)
 	if err := json.NewDecoder(reader).Decode(&body); err != nil {
@@ -1193,7 +1194,7 @@ func (d *daemon) fetchModels(ip string, port int, clusterUUID string) (modelInve
 	}
 	inventory := modelInventory{
 		models: body.Models, byEngine: body.ModelsByEngine, loadedByEngine: body.LoadedByEngine,
-		downloadedByEngine: body.DownloadedByEngine,
+		downloadedByEngine: body.DownloadedByEngine, aliases: body.ModelAliases,
 	}
 	if scheme == "https" {
 		d.mesh.Refresh()

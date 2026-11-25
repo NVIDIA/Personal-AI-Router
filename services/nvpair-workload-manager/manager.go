@@ -80,6 +80,9 @@ type Manager struct {
 	dedup       *dedupIndex
 	peers       *peerSet
 	broadcaster *Broadcaster
+	// aliasWrite carries a broker's request to replace another node's model alias
+	// document to that node and reports its verdict.
+	aliasWrite  *aliasForwarder
 	server      *Server
 	peerSource  PeerSource
 	relaySource *relayPeerSource // relay-fed peer set; the concrete peerSource
@@ -139,7 +142,8 @@ func NewManager(codec *Codec, port int, selfUUID, clusterDir string) *Manager {
 		activeLocal: make(map[workloadKey]workloadEvent),
 		broadcastCh: make(chan []byte, broadcastQueueDepth),
 	}
-	m.server = NewServer(port, dedup, mesh, m.emitUpsert, m.emitRemove)
+	m.server = NewServer(port, dedup, mesh, m.emitUpsert, m.emitRemove, m.codec.Notify)
+	m.aliasWrite = newAliasForwarder(m.broadcaster, m.codec.Notify)
 	return m
 }
 
@@ -308,6 +312,19 @@ func (m *Manager) handleMessage(msg *Message) {
 
 	case msg.Method == MethodRemove:
 		m.handleLocalRemove(msg)
+
+	case msg.Method == MethodReplacePeerAliases:
+		// Asking another node to replace its alias document waits on the network
+		// and then on that node's answer, so it runs off the read loop: a stalled
+		// post here would stall discovery snapshots and workload events for every
+		// peer this node talks to.
+		go m.aliasWrite.replacePeer(m.ctx, msg)
+
+	case msg.Method == MethodApplyAliasesResult:
+		// The local settings service's verdict on a write a peer asked for,
+		// correlated by request id, arriving as a notification the way every other
+		// frame on this interface does.
+		m.server.aliases().noteResult(msg)
 
 	case msg.Method == "shutdown":
 		if msg.IsRequest() {

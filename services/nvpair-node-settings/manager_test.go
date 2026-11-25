@@ -749,3 +749,155 @@ func writePipeRequest(t *testing.T, conn net.Conn, id int, method string, params
 	_, err = conn.Write(data)
 	require.NoError(t, err, "write request")
 }
+
+// TestClusterModelAliases_RoundTripsThroughSettings: aliases default to
+// empty, survive set/get unchanged (no normalization — the router owns
+// name semantics), survive a manager restart on the same file, and an
+// explicit empty list clears them.
+func TestClusterModelAliases_RoundTripsThroughSettings(t *testing.T) {
+	m, rw, path := newTestManager(t)
+
+	got := callAndDecode[ClusterModelAliasesParams](t, m, rw, 1, "settings/get-cluster-model-aliases", nil)
+	assert.Empty(t, got.Aliases, "default aliases")
+
+	want := []ModelAlias{
+		{Name: "quick-chat", Model: "llama3.2:1b"},
+		{Name: "embeddings", Model: "text-embedding-nomic-embed-text-v1.5"},
+	}
+	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-cluster-model-aliases",
+		map[string]any{"aliases": want})
+	got = callAndDecode[ClusterModelAliasesParams](t, m, rw, 3, "settings/get-cluster-model-aliases", nil)
+	assert.Equal(t, want, got.Aliases, "after set, aliases")
+
+	// A restart reads them back off disk.
+	rwRestart := newCaptureRW()
+	restarted, err := NewManager(NewCodec(rwRestart), path)
+	require.NoError(t, err, "NewManager (restart)")
+	got = callAndDecode[ClusterModelAliasesParams](t, restarted, rwRestart, 1, "settings/get-cluster-model-aliases", nil)
+	assert.Equal(t, want, got.Aliases, "aliases after restart")
+
+	_ = callAndDecode[map[string]bool](t, m, rw, 4, "settings/set-cluster-model-aliases",
+		map[string]any{"aliases": []ModelAlias{}})
+	got = callAndDecode[ClusterModelAliasesParams](t, m, rw, 5, "settings/get-cluster-model-aliases", nil)
+	assert.Empty(t, got.Aliases, "empty list clears aliases")
+}
+
+// TestClusterModelAliases_RejectsInvalidShapes: every shape that could not
+// route is refused at the door with -32602, and the refused state never
+// reaches disk or memory.
+func TestClusterModelAliases_RejectsInvalidShapes(t *testing.T) {
+	m, rw, _ := newTestManager(t)
+
+	cases := []struct {
+		name   string
+		params map[string]any
+		want   string
+	}{
+		{"missing aliases field", map[string]any{}, "invalid params"},
+		{"empty name", map[string]any{"aliases": []ModelAlias{{Name: "", Model: "m"}}},
+			"name must not be empty"},
+		{"duplicate name", map[string]any{"aliases": []ModelAlias{
+			{Name: "chat", Model: "m"},
+			{Name: "chat", Model: "m2"},
+		}}, "duplicate name"},
+		{"no target", map[string]any{"aliases": []ModelAlias{{Name: "chat"}}},
+			"model must name the model this alias stands for"},
+		{"blank target", map[string]any{"aliases": []ModelAlias{{Name: "chat", Model: "   "}}},
+			"model must name the model this alias stands for"},
+		{"target is its own name", map[string]any{"aliases": []ModelAlias{{Name: "chat", Model: "chat"}}},
+			"an alias that stands for itself routes nothing"},
+		{"target is another alias's name", map[string]any{"aliases": []ModelAlias{
+			{Name: "chat", Model: "llama3.2:1b"},
+			{Name: "fast-chat", Model: "chat"},
+		}}, "an alias stands for a model, not for another alias"},
+		// Padded fields are refused instead of trimmed: the name is matched
+		// against what a caller types and the target against what an engine is
+		// asked for, so whitespace at either end makes a row that can never
+		// answer, invisibly.
+		{"padded name", map[string]any{"aliases": []ModelAlias{{Name: "chat ", Model: "m"}}},
+			"name must not have leading or trailing spaces"},
+		{"padded target", map[string]any{"aliases": []ModelAlias{{Name: "chat", Model: " llama3.2:1b"}}},
+			"must not have leading or trailing spaces"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := callExpectError(t, m, rw, 10, "settings/set-cluster-model-aliases", tc.params, -32602)
+			assert.Contains(t, err.Message, tc.want)
+		})
+	}
+
+	got := callAndDecode[ClusterModelAliasesParams](t, m, rw, 11, "settings/get-cluster-model-aliases", nil)
+	assert.Empty(t, got.Aliases, "a rejected set left state untouched")
+}
+
+// TestClusterModelAliases_NeverConfiguredAndConfiguredEmptyStayDifferent: "this
+// node configures no aliases" and "nobody has edited this node's list" are
+// different answers, and the peer announcement keeps them apart so a node never
+// offers an editor over a silence. The settings file is where the two could
+// quietly collapse into one, so both halves are checked across a restart.
+func TestClusterModelAliases_NeverConfiguredAndConfiguredEmptyStayDifferent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	rw := newCaptureRW()
+	m, err := NewManager(NewCodec(rw), path)
+	require.NoError(t, err, "NewManager")
+
+	never := callAndDecode[ClusterModelAliasesParams](t, m, rw, 1, "settings/get-cluster-model-aliases", nil)
+	assert.Nil(t, never.Aliases, "a node nobody has edited has not stated a list")
+
+	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-cluster-model-aliases",
+		map[string]any{"aliases": []ModelAlias{}})
+	stated := callAndDecode[ClusterModelAliasesParams](t, m, rw, 3, "settings/get-cluster-model-aliases", nil)
+	require.NotNil(t, stated.Aliases, "saving an empty list is a stated answer, not silence")
+	assert.Empty(t, stated.Aliases, "and it is still an empty list")
+
+	rwRestart := newCaptureRW()
+	restarted, err := NewManager(NewCodec(rwRestart), path)
+	require.NoError(t, err, "NewManager (restart)")
+	after := callAndDecode[ClusterModelAliasesParams](t, restarted, rwRestart, 1, "settings/get-cluster-model-aliases", nil)
+	require.NotNil(t, after.Aliases, "a stated empty list is still stated after a restart")
+	assert.Empty(t, after.Aliases, "and still empty")
+}
+
+// TestClusterModelAliases_OldShapeDocumentStaysUnreadable: the shape change
+// came with a key change, cluster_model_aliases → model_aliases, so a document
+// written by the provider-citing build sits under a key nothing reads. It must
+// not arrive as a list of synonyms — decoded that way it is a set of entries
+// with no target, which routes nothing — and it must not fence the editor off a
+// document the user can neither read nor save over.
+func TestClusterModelAliases_OldShapeDocumentStaysUnreadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+		"force_ports": true,
+		"cluster_model_aliases": [
+			{"name": "quick-chat", "providers": [{"node_id": "n", "engine": "ollama", "model": "m"}]}
+		]
+	}`), 0o600))
+
+	rw := newCaptureRW()
+	m, err := NewManager(NewCodec(rw), path)
+	require.NoError(t, err, "NewManager (old-shape file)")
+
+	got := callAndDecode[ClusterModelAliasesParams](t, m, rw, 1, "settings/get-cluster-model-aliases", nil)
+	assert.Empty(t, got.Aliases, "a provider-citing document read as aliases")
+
+	// The old key is dropped on the next save rather than carried along, so a
+	// one-time shape change does not become a permanent second key.
+	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-cluster-model-aliases",
+		map[string]any{"aliases": []ModelAlias{{Name: "quick-chat", Model: "m"}}})
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "read settings after save")
+	assert.Contains(t, string(data), `"model_aliases"`, "saved settings")
+	assert.NotContains(t, string(data), "cluster_model_aliases", "the old key is not carried forward")
+}
+
+func TestSetClusterModelAliases_EmitsConnectionAliasesNotification(t *testing.T) {
+	m, rw, _ := newTestManager(t)
+
+	want := []ModelAlias{{Name: "quick-chat", Model: "llama3.2:1b"}}
+	_ = callAndDecode[map[string]bool](t, m, rw, 1, "settings/set-cluster-model-aliases",
+		map[string]any{"aliases": want})
+	n := expectNotification(t, rw, "connection/cluster-model-aliases")
+	var p ClusterModelAliasesParams
+	require.NoError(t, json.Unmarshal(n.Params, &p), "decode params")
+	assert.Equal(t, want, p.Aliases, "push carries the list just set")
+}

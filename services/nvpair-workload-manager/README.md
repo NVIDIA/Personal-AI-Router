@@ -17,6 +17,11 @@ The manager is a **relay and deduplicator**, not the source of truth. The broker
 and proxies decide a workload's state; this component passes `workloadInfo`
 through opaquely and forwards it.
 
+Its second job follows the same rule: it **carries another node's cluster model
+alias document** to the node that owns it, because its cluster-mTLS listener is
+the one port on a node a pinned peer can always reach — see *Peer model alias
+writes* below. It neither validates, stores, nor interprets a list on the way.
+
 ## Communication
 
 Two channels:
@@ -24,10 +29,10 @@ Two channels:
 - **Local** — bidirectional newline-delimited JSON-RPC 2.0 with the supervising
   `nvpair-ui-broker`. Stdio by default; `--ipc <path>` switches to a Unix domain
   socket or Windows named pipe.
-- **Inter-node** — a cluster-mTLS server on port `14320`
-  (`POST /v1/workloads/events`) that accepts the same JSON-RPC frames from pinned
-  peers, plus an outbound broadcaster that pushes local events to those peers with
-  bounded retry.
+- **Inter-node** — a cluster-mTLS server on port `14320` that accepts the same
+  JSON-RPC frames from pinned peers on `POST /v1/workloads/events`, plus
+  `POST /v1/settings/model-aliases` for a peer's alias-document write, and an
+  outbound broadcaster that pushes local events to those peers with bounded retry.
 
 Peers are discovered through the broker's node records rather than by this
 component browsing the network itself.
@@ -104,10 +109,82 @@ Translated remote events are forwarded to the broker as:
 | --- | --- |
 | `workloads:upsert` | `{ workloadInfo }` |
 | `workloads:remove` | `{ workloadId, originatedFrom }` |
+| `settings/apply-model-aliases` | `{ requestId, callerUuid, aliases }` — a peer's alias write for this node to apply |
+| `settings/peer-model-aliases-result` | `{ requestId, applied, error? }` — the owning node's verdict on a write this node asked for |
 | `ready` | `{ version }` — startup handshake |
 
 Duplicate events arriving from more than one peer are collapsed before they reach
 the broker, so a workload observed over several paths is reported once.
+
+The two `settings/` rows are not workload traffic: they belong to *Peer model alias
+writes* below, and they are notifications in both directions because this interface
+carries no request/response — only `requestId` ties a verdict to the Save that
+asked for it.
+
+## Peer model alias writes
+
+A cluster model alias is a name one node answers to. The document that holds a
+node's aliases belongs to **that node**: only its own `nvpair-node-settings`
+validates or stores it, and nothing replicates it. So "edit another machine's
+aliases" cannot be a shared-registry edit — it is that node's document, handed to
+that node, which validates it, applies it, and says whether it did.
+
+This component carries the document because its cluster-mTLS listener is the one
+port on a node a pinned peer can always reach: it is bound for the life of the
+process, and every peer already knows the address from the node record. A proxy's
+facade port would have been a tidier home for a settings route, but that listener
+follows an engine and closes whenever the engine is stopped — which is exactly when
+an operator may need to fix the alias that was pointing at it.
+
+**The courier is not the authority.** This component never validates, stores, or
+interprets an alias: it decodes a document just far enough to know one arrived and
+hands it to the local broker, which asks `nvpair-node-settings`. That keeps one
+validator for local and remote writes, and it means a node that refuses answers in
+its own words — a sentence the caller hears unchanged.
+
+| Direction | Name | Params |
+| --- | --- | --- |
+| Broker → WM (`stdin`) | `settings/replace-peer-model-aliases` | `{ requestId, nodeUuid, aliases }` — carry this document to that node |
+| WM → WM (`POST /v1/settings/model-aliases`) | `settings/replace-model-aliases` | `{ requestId, aliases }` |
+| WM → Broker (`stdout`) | `settings/apply-model-aliases` | `{ requestId, callerUuid, aliases }` |
+| Broker → WM (`stdin`) | `settings/apply-model-aliases-result` | `{ requestId, applied, error? }` |
+| WM → Broker (`stdout`) | `settings/peer-model-aliases-result` | `{ requestId, applied, error? }` |
+
+All five names live in `nvpair-shared/noderec`, which the broker's side of the same
+pipe names too: a frame name that changes on one side is a write nobody answers.
+
+- **An absent list is refused, not read as an empty one** (`400`), because the
+  write replaces the whole document and guessing here would erase a peer's aliases
+  on a malformed frame. `aliases: []` is the only way to ask for none, and a
+  `requestId` is required for the same reason — a write nobody can ask about is a
+  write nobody can confirm. A second write with an in-flight id gets `409`.
+- **Identity comes from the certificate.** The route re-derives membership per
+  request, so a peer removed from the cluster stops being served without a restart,
+  and the caller it reports to the local broker is the cluster id on that
+  certificate, never a field in the body. The broker logs it, so a write that
+  surprises an operator is traceable to a machine.
+- **The status codes say who spoke**: `200` `{ requestId, applied: true }`; `400`
+  a malformed frame, a method other than `settings/replace-model-aliases`, a
+  missing `requestId`, or an absent `aliases`; `403` an untrusted caller; `405` a
+  non-`POST`; `409` a duplicate in-flight id; `422` the owning node's settings
+  service refused the document, with that service's own sentence as the body; `502`
+  this node has no settings relay wired; `504` the document was handed over and no
+  verdict arrived in time. A `504` is deliberately not called a failure — the
+  change is already with the settings service, and "failed" is a sentence an
+  operator would act on.
+- **One attempt, and a verdict either way.** Unlike lifecycle broadcast, an alias
+  write is posted once: retrying a write whose outcome is unknown is a second
+  whole-document replace racing the first, so the operator decides by saving again.
+  A well-formed request always gets a verdict back to its broker, including "could
+  not reach that node" and "this computer is not in a cluster" — a request that
+  went unanswered would leave the operator's Save spinning until the broker gave
+  up, which is slower and less specific than the answer available here.
+- **Timeouts nest, innermost first**: `peerAliasApplyTimeout` (2 s, this node's
+  wait for its own settings service) sits under `perPeerTimeout` (3 s, the pooled
+  client's hop to a peer), which sits under `peerAliasTripTimeout` (10 s, the
+  calling side's whole trip, address selection included). If the inner wait were
+  the longer one, the caller's clock would speak first and report an unreachable
+  node for a write that may well have landed.
 
 ## Testing
 

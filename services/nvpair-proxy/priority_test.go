@@ -144,7 +144,7 @@ func TestHandleSetPriority_RejectsUnversionedSnapshot(t *testing.T) {
 
 	// Establish a baseline plus a live reservation against it.
 	applySnapshot(p, schedulerwire.Priority{Nodes: []string{"x", "y"}})
-	_, held := p.reserveCandidate(p.soleFacade(), reservationCandidates("x", "y"))
+	_, held := p.reserveCandidate(p.soleFacade().SelectedID(), reservationCandidates("x", "y"))
 	require.True(t, held.held, "no reservation was taken from the baseline")
 
 	id := json.RawMessage(`8`)

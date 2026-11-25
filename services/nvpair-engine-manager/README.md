@@ -343,6 +343,30 @@ expires or a status check cannot complete, allowing other devices to keep their
 previous model lists. Individual model-list fetch failures can still produce a
 successful response containing results from other engines.
 
+That response also carries this node's **cluster model alias document** as
+`modelAliases: [{ name, model }]`, so a peer's scanner reading this node's `em`
+entry sees the names this node routes by, not only the models it serves. The
+broker owns the document's arrival: it pushes `node/model-aliases {aliases}`
+whenever this node's settings document changes and once at bring-up, and each push
+replaces the whole document — there is no merge here, because the settings service
+is the only thing that validates or stores it.
+
+The field is **tri-state, and the third state is the point**:
+
+| On the wire | Meaning |
+| --- | --- |
+| key absent | this node has not been given a document — its settings service has not answered, or the broker is not running |
+| `"modelAliases": []` | this node has answered and configures **no** aliases |
+| `"modelAliases": [ … ]` | these are its aliases |
+
+A peer cannot safely guess between the first and the second, and the guess is not
+cosmetic: the surface on the other side of that read **saves the whole list it
+shows**, so drawing an empty editor for what was really silence is one Save away
+from erasing that node's aliases. So an undelivered document keeps the key off the
+wire entirely, and a delivered one is always published, the empty one included.
+The same rule holds inward: `node/model-aliases` with no `aliases` key withdraws
+the document and stops the announcement, rather than being read as "none".
+
 `EngineStatus` = `{ engine, display_name, installed, running, starting?, healthy, port }`.
 `starting` is true while a start launches the engine and waits for it to be
 ready, whoever began it (a Start, install-then-start, a settings restart, a

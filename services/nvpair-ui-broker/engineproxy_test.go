@@ -228,3 +228,39 @@ func TestAStrangerOnTheFacade_BlocksEveryEngine(t *testing.T) {
 		})
 	}
 }
+
+// The cluster router is process-scoped argv for the proxy: it threads only
+// when the broker was asked for, an explicit port travels with it, and a
+// broker nobody asked leaves the child's argv exactly as before.
+func TestProxyArgs_ThreadsTheClusterRouterOnlyWhenAskedFor(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		clusterDir        string
+		clusterRouter     bool
+		clusterRouterPort int
+		want              []string
+	}{
+		{
+			name:       "a broker without the router keeps only the cluster dir",
+			clusterDir: "/c",
+			want:       []string{"--cluster-dir", "/c"},
+		},
+		{
+			name:          "the router flag alone defers to the proxy's own port",
+			clusterRouter: true,
+			want:          []string{"--cluster-router"},
+		},
+		{
+			name:              "an explicit port travels with the flag",
+			clusterDir:        "/c",
+			clusterRouter:     true,
+			clusterRouterPort: 19999,
+			want:              []string{"--cluster-dir", "/c", "--cluster-router", "--cluster-router-port", "19999"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &Broker{clusterDir: tc.clusterDir, clusterRouter: tc.clusterRouter, clusterRouterPort: tc.clusterRouterPort}
+			assert.Equal(t, tc.want, b.proxyArgs())
+		})
+	}
+}

@@ -235,6 +235,7 @@ func TestDirectoryNode_EqualsComparesValues(t *testing.T) {
 		ModelsByEngine:     map[string][]string{"ollama": {"model-a"}},
 		LoadedByEngine:     map[string][]string{"ollama": {"model-a"}},
 		DownloadedByEngine: map[string][]string{"vllm": {"downloaded-model"}},
+		Aliases:            []ModelAlias{{Name: "quick-chat", Model: "qwen/qwen3.6-35b-a3b"}},
 		LastSeen:           123,
 	}
 	// Decoding produces separate allocations with the same values.
@@ -260,6 +261,14 @@ func TestDirectoryNode_EqualsDistinguishesRecordChanges(t *testing.T) {
 	test("model attribution changes", DirectoryNode{ModelsByEngine: map[string][]string{"ollama": {"model-a"}}}, DirectoryNode{ModelsByEngine: map[string][]string{"lmstudio": {"model-a"}}})
 	test("loaded models change", DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {"model-a"}}}, DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {"model-b"}}})
 	test("downloaded models change", DirectoryNode{DownloadedByEngine: map[string][]string{"vllm": {"model-a"}}}, DirectoryNode{DownloadedByEngine: map[string][]string{"vllm": {"model-b"}}})
+	test("alias name changes", DirectoryNode{Aliases: []ModelAlias{{Name: "quick-chat", Model: "model-a"}}}, DirectoryNode{Aliases: []ModelAlias{{Name: "other-name", Model: "model-a"}}})
+	test("alias target changes", DirectoryNode{Aliases: []ModelAlias{{Name: "quick-chat", Model: "model-a"}}},
+		DirectoryNode{Aliases: []ModelAlias{{Name: "quick-chat", Model: "model-b"}}})
+	test("alias entry order changes",
+		DirectoryNode{Aliases: []ModelAlias{{Name: "a-alias", Model: "model-a"}, {Name: "b-alias", Model: "model-b"}}},
+		DirectoryNode{Aliases: []ModelAlias{{Name: "b-alias", Model: "model-b"}, {Name: "a-alias", Model: "model-a"}}})
+	test("alias count changes", DirectoryNode{Aliases: []ModelAlias{{Name: "quick-chat", Model: "llama3.2:1b"}}},
+		DirectoryNode{Aliases: []ModelAlias{{Name: "quick-chat", Model: "llama3.2:1b"}, {Name: "embeddings", Model: "nomic-embed"}}})
 	test("timestamp changes", DirectoryNode{LastSeen: 1}, DirectoryNode{LastSeen: 2})
 	test("GPU name changes", DirectoryNode{GPUs: []GPUInfo{{Name: "GPU A"}}}, DirectoryNode{GPUs: []GPUInfo{{Name: "GPU B"}}})
 	test("GPU capacity changes", DirectoryNode{GPUs: []GPUInfo{{VramBytes: 1024}}}, DirectoryNode{GPUs: []GPUInfo{{VramBytes: 2048}}})
@@ -302,6 +311,7 @@ func TestDirectoryNode_EqualsDistinguishesAbsentAndEmptyValues(t *testing.T) {
 	test("engine model list", DirectoryNode{ModelsByEngine: map[string][]string{"ollama": nil}}, DirectoryNode{ModelsByEngine: map[string][]string{"ollama": {}}})
 	test("engine loaded model list", DirectoryNode{LoadedByEngine: map[string][]string{"ollama": nil}}, DirectoryNode{LoadedByEngine: map[string][]string{"ollama": {}}})
 	test("engine downloaded model list", DirectoryNode{DownloadedByEngine: map[string][]string{"vllm": nil}}, DirectoryNode{DownloadedByEngine: map[string][]string{"vllm": {}}})
+	test("aliases", DirectoryNode{}, DirectoryNode{Aliases: []ModelAlias{}})
 }
 
 func TestDirectoryNode_RoundTripsJSON(t *testing.T) {

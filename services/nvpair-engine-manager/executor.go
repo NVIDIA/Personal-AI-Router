@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	settings "nvpair-shared/enginesettings"
+	"nvpair-shared/noderec"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -183,6 +184,21 @@ type Executor struct {
 	loadedPoke chan struct{}
 
 	reservedPort atomic.Int32
+	// modelAliases is the cluster model alias list the broker pushed for this
+	// node, published verbatim on /v1/models so peer scanners enrich this
+	// node's directory entry with it. The broker replaces the list whole on
+	// every change and at this process's bring-up; the authoritative copy
+	// lives in the settings service.
+	//
+	// modelAliasesReported says whether the broker has delivered a document at
+	// all, which is a fact the list cannot carry: an empty list is either "this
+	// node configures no aliases" or "the settings service has not answered
+	// yet", and the two must not look alike. A peer's editor decides from that
+	// difference whether it is safe to offer a whole-document replace — see
+	// modelAliasesSnapshot.
+	modelAliasesMu       sync.Mutex
+	modelAliases         []noderec.ModelAlias
+	modelAliasesReported bool
 	// StopAll is terminal for an Executor; the gate closes its start/snapshot race.
 	shuttingDown atomic.Bool
 	// stopAllOnce collapses the shutdown entry points into a single sweep.
@@ -439,3 +455,41 @@ func startFailedID(engine string) string { return "engine-manager:start-failed:"
 func unhealthyID(engine string) string { return "engine-manager:unhealthy:" + engine }
 
 func exitedID(engine string) string { return "engine-manager:exited:" + engine }
+
+// SetModelAliases records the cluster model alias document the broker delivered
+// for this node. The broker is the only sender and always replaces the document
+// whole, so there is no merge to get wrong here — and the defensive copy keeps a
+// later broker-side reuse of the payload from mutating a response mid-encode.
+//
+// A nil list is not a document: it means no document was delivered, which the
+// announcement keeps off the wire rather than reporting as an empty
+// configuration. The broker only sends a nil list when the key is absent, which
+// it never does for a settings service that answered — an unconfigured node
+// arrives as an empty, non-nil list.
+func (e *Executor) SetModelAliases(aliases []noderec.ModelAlias) {
+	reported := aliases != nil
+	stored := make([]noderec.ModelAlias, len(aliases))
+	copy(stored, aliases)
+	e.modelAliasesMu.Lock()
+	e.modelAliases = stored
+	e.modelAliasesReported = reported
+	e.modelAliasesMu.Unlock()
+}
+
+// modelAliasesSnapshot returns this node's alias document for the /v1/models
+// announcement, and whether the broker has delivered one. While none has been
+// delivered the caller must omit the key: a peer reading this node cannot
+// otherwise tell "no aliases configured" from "this node has not said", and the
+// editor on the other side of that read replaces the whole document it shows.
+// Once delivered, the document is always published, empty included, and the
+// returned list is never nil so it encodes as [] rather than null.
+func (e *Executor) modelAliasesSnapshot() ([]noderec.ModelAlias, bool) {
+	e.modelAliasesMu.Lock()
+	defer e.modelAliasesMu.Unlock()
+	if !e.modelAliasesReported {
+		return nil, false
+	}
+	reported := make([]noderec.ModelAlias, len(e.modelAliases))
+	copy(reported, e.modelAliases)
+	return reported, true
+}

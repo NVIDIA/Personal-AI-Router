@@ -59,18 +59,27 @@ type Server struct {
 	// once at bind time, because a node joins and leaves while this process runs.
 	mesh *clustertrust.Mesh
 
+	// alias answers a peer's request to replace THIS node's model alias document.
+	alias *aliasApplier
+
 	srv *http.Server
 }
 
-func NewServer(port int, dedup *dedupIndex, mesh *clustertrust.Mesh, emitUpsert func(*Workload) error, emitRemove func(workloadID, nodeID string) error) *Server {
+func NewServer(port int, dedup *dedupIndex, mesh *clustertrust.Mesh, emitUpsert func(*Workload) error, emitRemove func(workloadID, nodeID string) error, emitAliasApply func(method string, params any) error) *Server {
 	return &Server{
 		port:       port,
 		dedup:      dedup,
 		mesh:       mesh,
 		emitUpsert: emitUpsert,
 		emitRemove: emitRemove,
+		alias:      newAliasApplier(mesh, emitAliasApply),
 	}
 }
+
+// aliases is the incoming-alias-write handler state, shared with the stdin read
+// loop so a verdict arriving from the local broker reaches the peer request that
+// is waiting on it.
+func (s *Server) aliases() *aliasApplier { return s.alias }
 
 // Run binds the inter-node port once and serves cluster mTLS on it for the life
 // of the process. There is no plain-HTTP personality: this is a cluster data
@@ -84,6 +93,7 @@ func NewServer(port int, dedup *dedupIndex, mesh *clustertrust.Mesh, emitUpsert 
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(eventsPath, s.handleEvents)
+	mux.HandleFunc(aliasWritePath, s.alias.handleAliasWrite)
 
 	base, err := net.Listen("tcp", ":"+strconv.Itoa(s.port))
 	if err != nil {

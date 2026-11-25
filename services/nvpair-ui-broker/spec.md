@@ -276,6 +276,8 @@ Requests the broker answers itself (client → broker):
 | `lmstudio-proxy:subscribe`, `llamacpp-proxy:subscribe`, `vllm-proxy:subscribe` | — | `SubscriptionResult{subscribed:true}`, then a baseline `<engine>-proxy:ready` if that facade has come up |
 | `lmstudio-proxy:unsubscribe`, `llamacpp-proxy:unsubscribe`, `vllm-proxy:unsubscribe` | — | `SubscriptionResult{subscribed:false}` |
 | `lmstudio-proxy:set-port`, `llamacpp-proxy:set-port`, `vllm-proxy:set-port` | `{ port }` | same as `ollama-proxy:set-port`, for that engine |
+| `router/status`, `router/get-aliases` | — | process-scoped relays to the one proxy process: the child's bound endpoint or merged alias view verbatim; `{"running":false,"port":0}` or an empty view when no proxy is running, and never consulted from `--cluster-router` |
+| `router/set-enabled` | `{ enabled, port }` | relay the live cluster-endpoint change to the one proxy process; the child's reply crosses verbatim, bind refusal with its code and reason included; when the exchange ends with the endpoint up, the stored cluster alias document is couriered to the child before the answer (§7.11) |
 | `engine:get-settings` | `{ engine, nodeId? }` | the engine's full settings snapshot, local or from a pinned peer |
 | `engine:preview-settings` | `{ engine, nodeId?, expectedRevision, settings, resolution? }` | normalized settings, validation errors, conflicts, and a restart/rebind summary; changes nothing |
 | `engine:apply-settings` | the preview request plus `requestId` | `{ revision, phase }` receipt; progress arrives as `engine:settings-changed` |
@@ -296,13 +298,15 @@ Requests the broker answers itself (client → broker):
 
 The facade rows are one profile-driven handler applied to every engine in `nvpair-shared/engines`, so each `<engine>-proxy:` namespace has the same broker-local surface.
 
+The `router/*` rows are also answered by relay but name no engine — the cluster endpoint is one listener across every facade, so there is no engine prefix to match. Each is claimed by name in dispatch and relayed unaddressed to the single proxy process; a child's reply crosses back as it was written. When no proxy runs, all three answer with an absent endpoint or an empty view rather than an error: the machine has no endpoint, and that is a configuration, not a failure.
+
 Anything else is matched by namespace prefix and relayed verbatim:
 
 | Namespace | Owning worker | Relay shape |
 |-----------|---------------|-------------|
 | `ollama-proxy:*`, `lmstudio-proxy:*`, `llamacpp-proxy:*`, `vllm-proxy:*` | that engine's `nvpair-proxy` facade | bounded synchronous `Call`; the client prefix is replaced by the engine address (`ollama-proxy:nodes/list` → `ollama:nodes/list`) |
 | `engine:*` | `nvpair-engine-manager` | asynchronous, **no broker-imposed timeout**, method verbatim |
-| `settings/*` | `nvpair-node-settings` | bounded synchronous `Call`, method verbatim |
+| `settings/*` | `nvpair-node-settings` | bounded synchronous `Call`, method verbatim — except `settings/set-node-model-aliases`, which the broker answers itself (§7.11) |
 | `cluster:*`, `nodes:*` | `nvpair-cluster-manager` | bounded synchronous `Call`, method verbatim |
 | `node/add`, `node/remove`, `nodes/list` | `nvpair-manual-nodes` | asynchronous, no broker-imposed timeout (`node/add` probes) |
 
@@ -342,7 +346,7 @@ Ten workers are supervised, started in this order:
    relays owned hardware to scanner, and sends local registry metadata back to
    node-info. The worker's live mesh gates protected inventory independently
    of its public preview endpoint.
-6. `nvpair-proxy` — one process, one supervisor, crash key `nvpair-proxy`. It starts with no listener; the broker then sends one `facade/enable` per engine named in `--proxy-engines` (default every engine), carrying the port it planned for that engine and any alias addresses. An engine left out is neither enabled nor prepared, so the broker never relocates an engine whose facade nothing will claim. Does **not** gate `app:ready`. A crash takes every facade down and the restart brings them back together, while a terminal failure releases each engine's port-ownership gate individually.
+6. `nvpair-proxy` — one process, one supervisor, crash key `nvpair-proxy`. It starts with no listener; the broker then sends one `facade/enable` per engine named in `--proxy-engines` (default every engine), carrying the port it planned for that engine and any alias addresses. A child started with `--cluster-router` additionally has the cluster routing endpoint bound from the start. The endpoint is not confined to that spawn-time setting either: the desktop can lift or drop it at runtime and the broker relays `router/set-enabled` to the process (§7.0), and the broker hands this node's stored alias document to the router at bring-up and again after a write that leaves the endpoint up (§7.11). An engine left out is neither enabled nor prepared, so the broker never relocates an engine whose facade nothing will claim. Does **not** gate `app:ready`. A crash takes every facade down and the restart brings them back together, while a terminal failure releases each engine's port-ownership gate individually.
 7. `nvpair-workload-manager` — does **not** gate `app:ready`; it has no readiness handshake the broker waits on.
 8. `nvpair-manual-nodes` (optional).
 9. `nvpair-cluster-manager` (optional).
@@ -397,9 +401,9 @@ Each worker's reader goroutine invokes a forwarder. Every forwarder calls `dispa
 | `forwardProxyNotificationForGeneration` / `forwardLMStudioProxyNotificationForGeneration` | one facade | stale generations dropped; a `bind-failed` on the managed facade port blocks the facade, otherwise selects a fallback port unless the user set the port explicitly; `ready` triggers port reconciliation; the remainder is emitted as `<engine>-proxy:<method>` to that namespace's subscribers |
 | `forwardDefaultEngineProxyNotification` | the llama.cpp and vLLM facades | no port reconciliation and no generation check: error-pipeline frames are claimed, and the remainder is emitted as `llamacpp-proxy:<method>` or `vllm-proxy:<method>` to that namespace's subscribers |
 | `handleManualNodesNotification` | `nvpair-manual-nodes` | source events upsert full authenticated hardware or separate display previews into `AvailableNode.info`; only pinned measurements feed scheduling; explicit reachable engine routes bridge independently; clients receive merged `discovery:nodes-changed` snapshots, not a separate manual `discovery:node-info` event |
-| `forwardSettingsNotification` | `nvpair-node-settings` | only `connection/cluster-identity` and `connection/cluster-auto-sync` are re-emitted, verbatim and unconditionally; everything else is debug-logged and dropped |
+| `forwardSettingsNotification` | `nvpair-node-settings` | re-emits `connection/cluster-identity` and `connection/cluster-auto-sync` verbatim and unconditionally; `connection/cluster-model-aliases` is re-emitted verbatim and also couriered to the proxy's router and engine-manager's announcement (§7.11); everything else is debug-logged and dropped |
 | `forwardClusterManagerNotification` | `nvpair-cluster-manager` | notifications relayed verbatim; identity changes persist settings and reconverge advertisement; trust changes invalidate obsolete scanner/manual proofs and prompt scanner reauthentication; node-info follows live mesh membership |
-| `forwardWorkloadManagerNotification` | `nvpair-workload-manager` | only `workloads:upsert` and `workloads:remove` are applied to the store and re-emitted to subscribers; `ready` and anything else are internal and dropped |
+| `forwardWorkloadManagerNotification` | `nvpair-workload-manager` | `workloads:upsert` and `workloads:remove` are applied to the store and re-emitted to subscribers; `settings/peer-model-aliases-result` settles a peer alias write this broker is holding open (§7.11); `ready` and anything else are internal and dropped |
 | `forwardSchedulerNotification` | `nvpair-job-scheduler` | `schedule:priority` is de-duplicated, cached, and delivered to the proxy (§7.5); everything else is dropped |
 | `onErrorsUpdate` | `nvpair-errors` | `errors:update` relayed verbatim and unconditionally |
 
@@ -556,7 +560,19 @@ The broker owns the combined settings operation for each engine: its server port
 - The broker sends the engine manager `engine:settings-projection`, the local snapshots its subscription hub serves to peers, whenever settings change and again on `engine:ready`.
 - An engine's launch configuration changes only through `engine:apply-settings` and the port setters built on it. A direct `engine:configure-launch` is refused with `-32601`, because it would skip the journal, the port reservation, and the proxy rebind.
 
-### 7.11 Versioning
+### 7.11 Peer model alias writes
+Each node's cluster model alias document belongs to that node: only its own `nvpair-node-settings` validates and stores it, and nothing about it is replicated. A client that wants to change **another** node's list says so once, and the broker decides which side of the cluster it is on.
+
+- `settings/set-node-model-aliases` takes `{ nodeId, aliases }` and is answered by the broker itself; it is not relayed. `nodeId` is the cluster principal id — the same UUID the broker reports as its own `nodeID` and as a peer's `AvailableNode.id` — and it is matched against this node's id, so a client never decides whether a write is local. `aliases` must be a list: an absent or `null` key is refused with `-32602`, because the write **replaces the whole document** and only `[]` states that a node configures none.
+- A local write goes to `settings/set-cluster-model-aliases` and answers with what the settings service answered. A peer's write is handed to `nvpair-workload-manager` as `settings/replace-peer-model-aliases`, which carries it to that node over the cluster-mTLS listener it already maintains, and the client's call stays open until a verdict arrives. `-32000` answers a write no cluster worker can carry.
+- The manager link is notification-only in both directions, so the verdict is the `settings/peer-model-aliases-result` notification, correlated by the `requestId` this broker minted. Its `error`, when the owning node refused, is that node's own sentence and is relayed to the client verbatim: the machine that owns the list is the one explaining it.
+- On the node that **owns** the document the same request arrives from its manager as `settings/apply-model-aliases`, naming the caller by the cluster id on the peer's client certificate — never from the request body — and the broker writes it through this node's settings service and answers `settings/apply-model-aliases-result`. A caller that is no longer pinned is not written to. An alias is never validated here: the settings service is the only validator, so local and remote writes meet the same rules.
+- The write is last-writer-wins: there is no revision to check, because a version field buys detection for a collision that needs two operators editing one node at one moment. The receipt means *the owning node's settings service wrote this document* — not that any other node routes by it yet, which follows on the owner's next model announcement and each peer's next sweep.
+- Timeouts nest, outermost last: this broker holds the client for 12 s around the manager's 10 s trip, which bounds a 3 s per-peer hop holding a 2 s apply, so a verdict exists before the outer clock speaks. `nvpair-workload-manager` exiting fails every write still waiting on it rather than leaving a client open.
+
+The stored document becomes routing behavior only by being carried, and the broker is its carrier: it delivers the list to the proxy's cluster router (`cluster/set-aliases`) and to engine-manager's peer-facing announcement (`node/model-aliases`) at each consumer's bring-up, forwards every `connection/cluster-model-aliases` push to both, and re-delivers to the router when a relayed `router/set-enabled` ends with the cluster endpoint up. Delivery is gated only on a consumer being there to receive it — never on the spawn-time `--cluster-router` preference — and on nothing when the endpoint stays down, because there is no router to name. When a live write does lift the endpoint, the document is couriered before the write is answered, so a client is never told an endpoint is on while the child cannot yet resolve a single configured name.
+
+### 7.12 Versioning
 - The component version is stamped at build time via `-ldflags "-X main.Version=…"` from `services/versions.json`, and is reported by `--version`, by `version`, by `ping`, and in the `app:ready` payload. A client should read it from `app:ready` rather than shelling out.
 - Client-facing method names are namespaced and evolve **additively**; the relayed namespaces are owned by their workers, and the broker forwards new methods within a namespace with no change here.
 - Notification payloads grow by adding optional fields. `discovery:get-nodes` deliberately wraps its array in an object so summary fields can be added later; the `discovery:nodes-changed` payload stays a bare array.

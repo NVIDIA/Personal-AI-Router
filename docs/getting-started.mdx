@@ -204,6 +204,38 @@ cluster, including a node that is not the machine in front of you. This is the
 point of a router: the address your application uses does not change depending on
 which machine ends up doing the work.
 
+### One Endpoint for the Whole Cluster
+
+Each engine endpoint speaks for one engine, so an application using it has to
+know which engine holds the model. If your cluster runs more than one engine and
+you would rather not care, open **Settings > Cluster** and turn on **Cluster
+routing endpoint**. The endpoint starts within seconds of the switch — the
+services keep running, and no restart is involved — and adds one more URL to
+**Endpoints**, on `9999` unless you change it. That endpoint routes a model
+name to **whichever node and engine in your cluster provides it** — the same
+routing decision the engine endpoints make, without you choosing the engine.
+
+Turning it off closes the endpoint just as live: a request already streaming
+finishes on the connection it opened, and new ones stop. Changing the port
+there moves the live endpoint within seconds. A number some other application
+already listens on is refused with a sentence naming the port, and the
+endpoint stays on the port that was working.
+
+The two are not alternatives you have to pick between. Use an engine endpoint when
+a client speaks that engine's own API, such as Ollama's `/api/chat`; use the
+cluster endpoint when a client speaks OpenAI's and you want one URL that keeps
+working when the weights move to another machine. Both accept requests from this
+machine only, exactly like the engine endpoints.
+
+The cluster endpoint answers `GET /v1/models` with everything your cluster can
+route right now, so a client that lists models before sending a request sees the
+same set it can ask for. It serves the OpenAI-compatible paths listed under
+[Use PAIR with Existing Applications](#use-pair-with-existing-applications) and
+nothing else — no engine's private administrative paths — because it has no
+single engine behind it to forward those to. So an Ollama client that discovers
+models through `/api/tags` finds nothing on this URL, and should be pointed at
+the Ollama endpoint instead, or left here with a model named directly.
+
 ### Why the Port May Not Be the One You Expect
 
 PAIR places a proxy in front of each engine. The proxy uses the port that the
@@ -459,8 +491,9 @@ relative to the proxy URL, before the `/v1` suffix:
 | Ollama | `http://127.0.0.1:11434` | Ollama's own API (`/api/chat`, `/api/generate`, `/api/embed`, and `/api/tags`), plus the OpenAI-compatible and Anthropic APIs listed below |
 | LM Studio | `http://127.0.0.1:1234` | The OpenAI-compatible and Anthropic APIs listed below |
 | llama.cpp | `http://127.0.0.1:8080` | The OpenAI-compatible API listed below, plus `/models` for model listings |
+| Cluster routing endpoint | `http://127.0.0.1:9999` | The OpenAI-compatible API listed below, for a model on **any** engine in your cluster. Turn it on in **Settings > Cluster**; the endpoint starts with the switch, and the row follows what is actually listening. |
 
-All three endpoints expose these OpenAI-compatible paths:
+The endpoints above expose these OpenAI-compatible paths:
 
 - `POST /v1/chat/completions` — [Conversations](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
 - `POST /v1/completions` — [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create)
@@ -483,6 +516,43 @@ refer to [What is supported](../README.md#what-is-supported) in the README.
 
 Review the terms for any third-party engine, model, or application you use with
 PAIR.
+
+### Give a Model a Name of Your Choosing
+
+Model names are not always convenient. `qwen/qwen3.6-35b-a3b` is a fine model ID
+and a poor thing to type into a client every day, and the same weights may be
+installed under a different ID on a different engine. **Model aliases** fix both:
+open this computer's card in **Overview**, add a name you want to use beside the
+model it stands for, and the cluster endpoint on this machine answers to that name.
+
+A few things about it are worth knowing, because each one has bitten somebody:
+
+- **Each computer keeps its own list.** What you add here is announced to the
+  other members of your cluster, so their endpoints route by it too, and theirs
+  arrive here the same way. Nothing is stored in one shared place that every
+  machine reads.
+- **A real model name always wins.** If some engine literally serves a model
+  named `writer`, then `writer` means that model, even if somebody aliased the
+  name elsewhere. An alias only applies when no engine serves the name you typed.
+- **One name can reach several machines.** Two computers may each alias the same
+  name, each to their own engine's spelling of the same model. Requests by that
+  name go to whichever of them can serve it right now, and if both can, either.
+- **The alias changes what you type, not what is sent.** PAIR replaces the name in
+  your request with the model ID that engine actually uses, so the model itself is
+  unchanged and the same request with the real ID keeps working. Delete an alias
+  and nothing else about the model moves.
+- **A name nothing serves is not offered.** The cluster endpoint's model list only
+  contains names it can route, and asking for a name that resolves nowhere gets a
+  refusal naming that fact rather than an attempt at a guess.
+
+Every list is edited the same way, on the card of the machine that owns it: this
+computer's card holds your own list, and another node's card holds its list, which
+your computer writes to over the cluster link. The machine that owns a list is the
+one that validates a change to it, which is why a name it rejects is refused in
+that machine's own words. **Settings > Cluster** does not edit any of them; it
+shows which names this computer's endpoint routes by that were written on other
+machines, and which machine wrote each, which is the one thing no single node's
+card can tell you.
 
 ### The Endpoint Is Local to the Machine Running PAIR
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
-import { ContentCopy } from './icons'
+import { ContentCopy, Route } from './icons'
 
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { EnabledEngineTypes, EngineDisplayNames } from '@/shared/constants/engines'
@@ -21,11 +21,21 @@ function createCopiedState(enabledEngines: EngineType[]): Record<string, boolean
     return copiedState
 }
 
+/** Doubles as the copy-state key for the cluster routing row, so it is one name. */
+const CLUSTER_ENDPOINT_NAME = 'Cluster routing'
+
 export default function EndpointContent({
     selfId,
+    clusterPort,
     className
 }: {
     selfId: string
+    /**
+     * Port the cluster routing endpoint actually answers on, or `null` when this
+     * computer does not serve one. Reported by the proxy rather than read from
+     * the configured port, so a port somebody else holds is not listed here.
+     */
+    clusterPort: number | null
     className?: string
 }) {
     const [copied, setCopied] = useState<Record<string, boolean>>(() =>
@@ -37,7 +47,7 @@ export default function EndpointContent({
         [selfId, statusByNode]
     )
     const allBackends = useMemo(() => {
-        const engines = EnabledEngineTypes.map(type => {
+        const endpoints = EnabledEngineTypes.map(type => {
             const backend = selfEngines.find(b => b.engineType === type)
             const isAvailable = isEngineTypeRunningClusterWide(statusByNode, type)
 
@@ -49,17 +59,27 @@ export default function EndpointContent({
             return {
                 name: EngineDisplayNames[type],
                 proxyPort: port,
-                url: gatewayEndpointDisplayUrl(port, type),
+                url: gatewayEndpointDisplayUrl(port),
                 icon: <EngineIcon type={type} />
             }
-        }).filter(v => !!v)
+        })
 
-        if (engines.length === 0) {
-            return []
+        // One endpoint that is not an engine: a single loopback port that routes
+        // to any engine on any node. It is therefore not in the engine table and
+        // arrives as a reported port, and it stands on its own — a computer with
+        // no engine facade still routes from its endpoint, so the "no engines"
+        // empty state must not swallow it.
+        if (clusterPort !== null) {
+            endpoints.push({
+                name: CLUSTER_ENDPOINT_NAME,
+                proxyPort: clusterPort,
+                url: gatewayEndpointDisplayUrl(clusterPort),
+                icon: <Route />
+            })
         }
 
-        return engines
-    }, [selfEngines, statusByNode])
+        return endpoints.filter(v => !!v)
+    }, [selfEngines, statusByNode, clusterPort])
 
     const handleCopy = useCallback(async (value: string, backend: string) => {
         const electronCopy = window.windowApi?.window?.copyToClipboard

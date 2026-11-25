@@ -128,6 +128,24 @@ func (p *peerSet) targets() []target {
 	return out
 }
 
+// targetFor returns the destination for the peer holding a cluster id, false
+// when no currently discovered peer does. It is the addressing half of a
+// single-target post: discovery says where a peer is, the pin store says whether
+// it may be dialed at all, and both must answer before a byte leaves.
+func (p *peerSet) targetFor(uuid string) (target, bool) {
+	if uuid == "" {
+		return target{}, false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for id, e := range p.peers {
+		if e.uuid == uuid {
+			return target{id: id, candidates: e.candidates, uuid: e.uuid}, true
+		}
+	}
+	return target{}, false
+}
+
 func (p *peerSet) count() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

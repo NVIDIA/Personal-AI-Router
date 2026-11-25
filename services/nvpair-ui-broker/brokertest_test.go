@@ -100,6 +100,55 @@ func newTestRPCWorkerPipe(t *testing.T) (*rpcWorker, *Codec) {
 	return worker, NewCodec(server)
 }
 
+// newAnsweringSettingsWorker wires a settings worker that answers every call
+// with the same document, the way addAnsweringProxy answers every call for a
+// proxy child. Courier tests drive the alias list through its real source —
+// the settings link — because the courier's job is to carry whatever was
+// stored, and a value a test planted in a field proves nothing about that.
+func newAnsweringSettingsWorker(t *testing.T, doc string) *rpcWorker {
+	t.Helper()
+	worker, settingsEnd := newTestRPCWorkerPipe(t)
+	go func() {
+		for {
+			request, err := settingsEnd.Read()
+			if !assertRPCRead(t, err) {
+				return
+			}
+			assert.NoError(t, settingsEnd.Respond(request.ID, json.RawMessage(doc)))
+		}
+	}()
+	return worker
+}
+
+// nextFrameWithin takes the next frame a watching test is owed, or reports
+// none after the window. The window separates "not yet" from "never": the
+// frame may still be crossing the pipe or the streaming goroutine when the
+// test looks.
+func nextFrameWithin(t *testing.T, frames <-chan *Message, window time.Duration) (*Message, bool) {
+	t.Helper()
+	select {
+	case frame, ok := <-frames:
+		return frame, ok
+	case <-time.After(window):
+		return nil, false
+	}
+}
+
+// requireStreamStaysQuiet fails if another frame arrives during the quiet
+// window. Same reasoning as requireGateStaysShut: the delivery under test
+// happens on another goroutine, so the wait is what makes the silence mean
+// anything.
+func requireStreamStaysQuiet(t *testing.T, frames <-chan *Message, reason string) {
+	t.Helper()
+	select {
+	case frame, ok := <-frames:
+		if ok {
+			require.FailNowf(t, "a frame reached the child when none should have", "%s (saw %s)", reason, frame.Method)
+		}
+	case <-time.After(gateQuietWindow):
+	}
+}
+
 // brokerWithEngineStatus is brokerWithEngineInventory for a single engine.
 func brokerWithEngineStatus(t *testing.T, engine string, port int) *Broker {
 	return brokerWithEngineInventory(t, map[string]int{engine: port})

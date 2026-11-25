@@ -100,7 +100,9 @@ func directoryKey(n noderec.DirectoryNode) string {
 }
 
 // promote atomically replaces the authenticated discovery with its peer record.
-// Model fields survive only while their authenticated source remains unchanged.
+// Model and alias fields survive only while their authenticated source remains
+// unchanged: they arrived on the same engine-manager fetch, so they enter and
+// age together.
 func (d *directory) promote(candidateID string, n noderec.DirectoryNode) (removed noderec.DirectoryNode, discovered, changed bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -111,6 +113,7 @@ func (d *directory) promote(candidateID string, n noderec.DirectoryNode) (remove
 		if sameModelSource(old, n) {
 			n.Models, n.ModelsByEngine, n.LoadedByEngine = old.Models, old.ModelsByEngine, old.LoadedByEngine
 			n.DownloadedByEngine = old.DownloadedByEngine
+			n.Aliases = old.Aliases
 		}
 		n.LastSeen = old.LastSeen
 	}
@@ -231,7 +234,8 @@ func (d *directory) applyModels(hostUUID, ip string, emPort int, inventory model
 	if sameStringSet(n.Models, inventory.models) &&
 		sameByEngine(n.ModelsByEngine, inventory.byEngine) &&
 		sameByEngine(n.LoadedByEngine, inventory.loadedByEngine) &&
-		sameByEngine(n.DownloadedByEngine, inventory.downloadedByEngine) {
+		sameByEngine(n.DownloadedByEngine, inventory.downloadedByEngine) &&
+		sameAliases(n.Aliases, inventory.aliases) {
 		return n, false, true
 	}
 	inventory.applyTo(&n)
@@ -245,4 +249,20 @@ func (d *directory) applyModels(hostUUID, ip string, emPort int, inventory model
 // per-engine attribution").
 func sameByEngine(a, b map[string][]string) bool {
 	return maps.EqualFunc(a, b, sameStringSet)
+}
+
+// sameAliases reports whether two announced alias lists mean the same thing:
+// otherwise the pairs must match element for element (name and target,
+// order-sensitive). A synonym names a model rather than a host, so one list
+// compares as the two strings per entry that it is. Getting this false is what
+// turns a peer's alias edit into a change push, so the routers downstream of the
+// relay see it on the sweep that noticed it rather than never.
+//
+// A nil and an empty list do not mean the same thing and must not compare equal:
+// nil is "the announcing node has not reported a document" and empty is "this
+// node configures none", and a node that upgrades into reporting an empty
+// document has to be seen to have changed, or the machines reading it keep
+// believing nobody told them anything.
+func sameAliases(a, b []noderec.ModelAlias) bool {
+	return (a == nil) == (b == nil) && slices.Equal(a, b)
 }

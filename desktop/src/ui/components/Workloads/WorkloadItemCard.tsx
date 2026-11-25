@@ -4,7 +4,7 @@
 import { useMemo, memo, type CSSProperties } from 'react'
 import { Card, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { Workload } from '@/shared/types/workloads'
-import { workloadExecutionNodeId } from '@/shared/utils/workloads'
+import { workloadEngineLabel, workloadExecutionNodeId } from '@/shared/utils/workloads'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { WORKLOAD_COLOR_MAP } from '@/ui/constants/colors'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
@@ -64,6 +64,11 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
         return state.nodes.get(workload.originatedFrom)?.name ?? ''
     })
     const barColor = useMemo(() => getWorkloadColorBar(workload.state), [workload.state])
+    // A cluster-routed row already names the machine that served it below, so its
+    // routing mark needs no text. A row no engine on this machine claims is a
+    // contract drift, so it says that out loud instead of showing a lone mark.
+    const unclaimedEngineText =
+        workload.engine === 'unknown' ? workloadEngineLabel(workload.engine) : ''
 
     const subtext = useMemo(() => {
         const state = workload.state
@@ -141,6 +146,11 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
                     <Text kind="body/bold/sm" className="min-w-0 truncate">
                         {formatModelDisplayName(workload.model, workload.engine)}
                     </Text>
+                    {unclaimedEngineText && (
+                        <Text kind="body/regular/sm" className="text-subtle-color">
+                            {unclaimedEngineText}
+                        </Text>
+                    )}
                 </Flex>
 
                 {(requestedFromNodeText || executionNodeText) && (

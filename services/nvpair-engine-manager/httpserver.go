@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/noderec"
 	"nvpair-shared/splitlisten"
 )
 
@@ -93,10 +94,30 @@ func modelsHandler(exec *Executor) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		// {"models":[...union...],"modelsByEngine":{"ollama":[...],...},
-		// "loadedByEngine":{"ollama":[...],...}} — the flat union stays for
-		// existing consumers; modelsByEngine and loadedByEngine are additive
-		// (both omitempty, so absent when no engine reports them).
-		_ = json.NewEncoder(w).Encode(result)
+		// "loadedByEngine":{"ollama":[...],...},"modelAliases":[...]} — the
+		// flat union stays for existing consumers; modelsByEngine and
+		// loadedByEngine are additive (omitempty, so absent when nothing
+		// reports them). modelAliases carries this node's configured cluster
+		// model aliases — broker-pushed, see Executor.SetModelAliases — read by
+		// peer scanners to enrich this node's directory entry on the other side
+		// of the pinned-mTLS gate.
+		//
+		// modelAliases does NOT share those two fields' omit rule: it is absent
+		// only while the broker has delivered no document. A node that
+		// configures none announces [], because the reading side's editor
+		// replaces the whole list it shows and must not offer to do that over a
+		// silence. Hence the pointer: an empty slice with omitempty would drop
+		// the very case the empty list exists to state.
+		aliases, reported := exec.modelAliasesSnapshot()
+		var announced *[]noderec.ModelAlias
+		if reported {
+			announced = &aliases
+		}
+		announcement := struct {
+			ModelsResult
+			ModelAliases *[]noderec.ModelAlias `json:"modelAliases,omitempty"`
+		}{ModelsResult: result, ModelAliases: announced}
+		_ = json.NewEncoder(w).Encode(announcement)
 	}
 }
 

@@ -177,6 +177,52 @@ func (b *Broadcaster) post(ctx context.Context, client *http.Client, url string,
 	return nil
 }
 
+// PostToPeer posts one frame to one pinned peer's inter-node path and hands back
+// the response. It is the single-target counterpart of Broadcast, and it differs
+// in the two ways a caller that wants an answer needs: it makes exactly one
+// attempt (a peer's answer is a verdict, not a delivery, so retrying a write the
+// peer already refused would only duplicate it), and it reads the body instead of
+// draining it, because that body is the reason for a refusal.
+//
+// An error is returned only when no answer arrived. A peer that answers 4xx/5xx
+// has spoken, so its status and body are the result.
+func (b *Broadcaster) PostToPeer(ctx context.Context, peerUUID, path string, frame []byte) (int, []byte, error) {
+	b.mesh.Refresh()
+	b.clients.DropUnpinned()
+
+	destination, ok := b.peers.targetFor(peerUUID)
+	if !ok {
+		return 0, nil, errors.New("no node with that cluster id is currently discovered")
+	}
+	client, ok := b.clients.Client(peerUUID)
+	if !ok {
+		return 0, nil, errors.New("that node is not a pinned member of this cluster")
+	}
+
+	url := "https://" + b.addrs.ChooseWithin(ctx, destination.id, destination.candidates) + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(frame))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		var statusErr *httpStatusError
+		if !errors.As(err, &statusErr) {
+			b.addrs.Forget(destination.id)
+		}
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAliasReplyBytes))
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read reply from %s: %w", url, err)
+	}
+	return resp.StatusCode, body, nil
+}
+
 type httpStatusError struct {
 	code int
 	url  string

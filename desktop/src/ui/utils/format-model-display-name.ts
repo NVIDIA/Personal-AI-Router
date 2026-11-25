@@ -54,6 +54,22 @@ export function formatModelDisplayName(name: string, engineType?: string | null)
 }
 
 /**
+ * The name an engine answers to, in parentheses, for a row that leads with a
+ * friendlier one. Display-only, like every formatter here: alias definitions and
+ * every other wire operation use `wireName`, never what the row prints.
+ *
+ * Returns '' when the row already prints the wire name — the friendly form of
+ * `deepseek-r1:8b` is the same string, and repeating it would spend the row's
+ * width on nothing.
+ */
+export function modelWireNameSuffix(wireName: string, friendlyName: string): string {
+    if (!wireName || !friendlyName || friendlyName === wireName) {
+        return ''
+    }
+    return ` (${wireName})`
+}
+
+/**
  * Format an LM Studio / llama.cpp GGUF model path into a readable name.
  * "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
  * -> "Meta Llama 3.1 8B Instruct (Q4_K_M)"

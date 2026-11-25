@@ -19,6 +19,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"nvpair-shared/noderec"
 )
 
 // TestManagerErrorResponses drives handleMessage / runOp / runAction over
@@ -41,6 +43,94 @@ func TestManager_ReturnsProtocolErrorsForInvalidRequests(t *testing.T) {
 	test("invalid params", "engine:start", `{bad}`, "invalid params", (*Manager).runOp)
 	test("missing action", "engine:action", `{"engine":"x"}`, "engine and action are required", (*Manager).runAction)
 	test("pull naming no model", "engine:action", `{"engine":"x","action":"pull_model","params":{}}`, "model is required", (*Manager).runAction)
+}
+
+// The broker's courier re-pushes this node's configured cluster model aliases
+// as the node/model-aliases notification, at engine-manager bring-up and on
+// every settings change. Engine-manager only stores what it will re-announce
+// on /v1/models; these drive the notification exactly as the courier sends it.
+
+func TestModelAliasesNotification_ReplacesTheAnnouncementList(t *testing.T) {
+	var out bytes.Buffer
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+	m := NewManager(NewCodec(&out), ex, nil)
+
+	m.handleMessage(context.Background(), &Message{
+		JSONRPC: "2.0",
+		Method:  "node/model-aliases",
+		Params:  json.RawMessage(`{"aliases":[{"name":"quick-chat","model":"qwen/qwen3.6-35b-a3b"}]}`),
+	})
+	snapshot, reported := ex.modelAliasesSnapshot()
+	require.True(t, reported)
+	require.Equal(t, []noderec.ModelAlias{{Name: "quick-chat", Model: "qwen/qwen3.6-35b-a3b"}},
+		snapshot)
+
+	// Every push is complete, so a second one replaces rather than appends:
+	// an alias deleted in settings must vanish from the announcement.
+	m.handleMessage(context.Background(), &Message{
+		JSONRPC: "2.0",
+		Method:  "node/model-aliases",
+		Params:  json.RawMessage(`{"aliases":[{"name":"embeddings","model":"nomic-embed"}]}`),
+	})
+	snapshot, reported = ex.modelAliasesSnapshot()
+	require.True(t, reported)
+	require.Len(t, snapshot, 1)
+	require.Equal(t, "embeddings", snapshot[0].Name)
+
+	// A settings service that answers "no aliases" pushes [], and that is a
+	// document: the announcement must go on saying so rather than falling back
+	// to silence, which a peer reads as "this node has not told me anything".
+	m.handleMessage(context.Background(), &Message{
+		JSONRPC: "2.0",
+		Method:  "node/model-aliases",
+		Params:  json.RawMessage(`{"aliases":[]}`),
+	})
+	snapshot, reported = ex.modelAliasesSnapshot()
+	require.True(t, reported, "an empty document is still an answer")
+	require.NotNil(t, snapshot)
+	require.Empty(t, snapshot)
+
+	// A notification is not a request: it neither gets a response nor falls
+	// through to the unknown-method error.
+	require.Empty(t, out.String(), "the alias notification answered the codec")
+}
+
+func TestModelAliasesNotification_MissingListWithdrawsTheDocument(t *testing.T) {
+	var out bytes.Buffer
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+	m := NewManager(NewCodec(&out), ex, nil)
+	ex.SetModelAliases([]noderec.ModelAlias{{Name: "quick-chat", Model: "qwen/qwen3.6-35b-a3b"}})
+
+	// A courier push with no list says nothing is known, which is not the same
+	// as a configuration of none: the announcement has to stop claiming either.
+	m.handleMessage(context.Background(), &Message{
+		JSONRPC: "2.0",
+		Method:  "node/model-aliases",
+		Params:  json.RawMessage(`{}`),
+	})
+	_, reported := ex.modelAliasesSnapshot()
+	require.False(t, reported)
+	require.Empty(t, out.String())
+}
+
+func TestModelAliasesNotification_MalformedPayloadLeavesTheListUnchanged(t *testing.T) {
+	var out bytes.Buffer
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+	m := NewManager(NewCodec(&out), ex, nil)
+	seed := []noderec.ModelAlias{{Name: "quick-chat", Model: "qwen/qwen3.6-35b-a3b"}}
+	ex.SetModelAliases(seed)
+
+	// A half-decoded payload would silently reroute what peers route with,
+	// so a malformed push is refused and the last complete list stays.
+	m.handleMessage(context.Background(), &Message{
+		JSONRPC: "2.0",
+		Method:  "node/model-aliases",
+		Params:  json.RawMessage(`{"aliases":"not-a-list"}`),
+	})
+	snapshot, reported := ex.modelAliasesSnapshot()
+	require.True(t, reported, "a refused push must not withdraw what the last good one delivered")
+	require.Equal(t, seed, snapshot)
+	require.Empty(t, out.String())
 }
 
 func TestRunOp_RejectsBadPort(t *testing.T) {

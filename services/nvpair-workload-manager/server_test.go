@@ -39,6 +39,7 @@ func TestServer_RecordsPeerEventOnlyAfterSuccessfulEmission(t *testing.T) {
 					removes++
 					return nil
 				},
+				nil,
 			)
 			post := serveEventsOverMTLS(t, srv, self, peer)
 
@@ -96,6 +97,7 @@ func TestServer_ConcurrentDuplicatesEmitOnce(t *testing.T) {
 			srv := NewServer(0, newDedupIndex(100), nil,
 				func(*Workload) error { return emit() },
 				func(string, string) error { return emit() },
+				nil,
 			)
 			msg := &Message{Params: params}
 			post := func(result chan<- int) {

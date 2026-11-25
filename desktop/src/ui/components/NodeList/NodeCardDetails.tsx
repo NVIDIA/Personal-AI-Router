@@ -3,7 +3,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Flex, Stack } from '@nvidia/foundations-react-core'
-import { BarChartOutlined, SettingsOutlined } from '@/ui/components/icons'
+import { BarChartOutlined, SettingsOutlined, Tag } from '@/ui/components/icons'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
 import type { NodeItem } from '@/shared/types/nodes'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
@@ -24,6 +24,7 @@ import { buildRadialChartMetrics } from '@/ui/utils/build-radial-chart-metrics'
 import { hasInferenceReadyGpu, isGpuInferenceReady } from '@/ui/utils/gpu-inference'
 import NodeEnginesInline from './NodeEnginesInline'
 import NodeEngineSettings from './NodeEngineSettings'
+import NodeModelAliases from './NodeModelAliases'
 
 const MAX_CHART_SIZE = 60
 
@@ -39,6 +40,11 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
     // Mount the heavy engine editor only after the first expand so N node cards
     // don't each render a full BackendRow stack while collapsed.
     const [hasOpenedEngineSettings, setHasOpenedEngineSettings] = useState(false)
+    const [isAliasesExpanded, setIsAliasesExpanded] = useState(false)
+    // The alias section reads on mount (this node's own list) and holds editor
+    // state for the rows, so it is mounted on first expand and then left mounted
+    // for the same reason as the engine editor: collapsing must not lose a draft.
+    const [hasOpenedAliases, setHasOpenedAliases] = useState(false)
     // The engine cards cast a 15px drop shadow that the accordion's
     // overflow-hidden wrapper (needed to animate height) would clip. Flip the
     // wrapper to overflow-visible only once the open transition settles.
@@ -123,12 +129,16 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
 
     const jobCount = useNodeActiveJobCount(node.id)
 
-    // Performance chart and engine settings are mutually exclusive — opening one
-    // collapses the other so only a single section is ever expanded per card.
+    // Performance chart, engine settings and model aliases are mutually
+    // exclusive — opening one collapses the others so only a single section is
+    // ever expanded per card.
     const togglePerformance = useCallback(() => {
         setIsExpanded(prev => {
             const next = !prev
-            if (next) setIsEngineSettingsExpanded(false)
+            if (next) {
+                setIsEngineSettingsExpanded(false)
+                setIsAliasesExpanded(false)
+            }
             return next
         })
     }, [])
@@ -139,6 +149,19 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
             if (next) {
                 setHasOpenedEngineSettings(true)
                 setIsExpanded(false)
+                setIsAliasesExpanded(false)
+            }
+            return next
+        })
+    }, [])
+
+    const toggleAliases = useCallback(() => {
+        setIsAliasesExpanded(prev => {
+            const next = !prev
+            if (next) {
+                setHasOpenedAliases(true)
+                setIsExpanded(false)
+                setIsEngineSettingsExpanded(false)
             }
             return next
         })
@@ -151,6 +174,7 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
         setIsEngineSettingsExpanded(true)
         setHasOpenedEngineSettings(true)
         setIsExpanded(false)
+        setIsAliasesExpanded(false)
         consumeFocusNode()
         requestAnimationFrame(() => {
             containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -224,6 +248,19 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
                     aria-expanded={isEngineSettingsExpanded}
                 >
                     <SettingsOutlined style={{ fontSize: 14 }} />
+                </Button>
+            </DismissibleTooltip>
+            <DismissibleTooltip slotContent="Show model aliases" placement={placement}>
+                <Button
+                    kind={isAliasesExpanded ? 'primary' : 'tertiary'}
+                    color="neutral"
+                    size="tiny"
+                    className="px-2"
+                    onClick={toggleAliases}
+                    aria-label="Model aliases"
+                    aria-expanded={isAliasesExpanded}
+                >
+                    <Tag style={{ fontSize: 14 }} />
                 </Button>
             </DismissibleTooltip>
         </>
@@ -339,6 +376,26 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
                         {hasOpenedEngineSettings && (
                             <div className="mt-4">
                                 <NodeEngineSettings nodeId={node.id} />
+                            </div>
+                        )}
+                    </div>
+                </div>
+                {/* Model aliases: the alias document of the node this card is for.
+                    Its own rows, not the merged list this computer routes by,
+                    because a row belongs to the machine that wrote it. Nothing in
+                    this section casts a shadow, so unlike the engine editor above
+                    the wrapper stays clipped while it animates. */}
+                <div
+                    style={{
+                        display: 'grid',
+                        gridTemplateRows: isAliasesExpanded ? '1fr' : '0fr',
+                        transition: 'grid-template-rows 0.25s ease'
+                    }}
+                >
+                    <div className="overflow-hidden min-h-0">
+                        {hasOpenedAliases && (
+                            <div className="mt-4">
+                                <NodeModelAliases nodeId={node.id} />
                             </div>
                         )}
                     </div>

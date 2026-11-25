@@ -71,6 +71,12 @@ type ErrorParams struct {
 // sits in the implementation-defined -32000..-32099 server range.
 const codeFacadeBindFailed = -32010
 
+// codeRouterBindFailed is the JSON-RPC error code for a router/set-enabled
+// refused because the requested port could not be bound — the cluster
+// endpoint's share of the rule above, answered before the listener is touched,
+// so the refusal costs the call and not the endpoint that already serves.
+const codeRouterBindFailed = -32011
+
 type NodesResult struct {
 	Nodes []Node `json:"nodes"`
 }
@@ -431,6 +437,40 @@ type Proxy struct {
 	// exists because each facade's request counter restarts at 1, so without it
 	// a reused id after a restart would collide in the broker's store.
 	runID string
+
+	// clusterRouter is the cluster routing endpoint this process hosts, nil
+	// when there is none — never asked for, asked for but refused at process
+	// start, or turned off at runtime. A new endpoint is never nameless: it
+	// installs the stored clusterAliasDoc (below) before it serves, so an
+	// alias written while no endpoint was up still routes from that
+	// endpoint's first request.
+	//
+	// Written only from the codec read goroutine: once at process start,
+	// before that loop begins, and after that only by router/set-enabled,
+	// which applies inline on the same goroutine. That single-writer rule is
+	// what lets the dispatch reads below take no lock; do not write this
+	// field from another goroutine, and do not add a second bring-up path
+	// around it.
+	clusterRouter *clusterRouter
+
+	// clusterAliasDoc is this node's configured model-alias list, kept on
+	// the process because it is configuration, not endpoint state. The
+	// broker couriers it over cluster/set-aliases, and the dispatch stores
+	// it whether or not a router is up (a live router also takes it right
+	// away through setAliases). bringUpRouter installs the stored document
+	// into every fresh endpoint, which is the whole reason a router-less
+	// process accepts the push: the courier delivers once per consumer
+	// bring-up and again on change, so a refusal would reappear as an
+	// endpoint that routes only exact native names — reading broken rather
+	// than unconfigured — and with no listener there is no routing the
+	// stored list could disturb.
+	//
+	// Same single-writer rule as clusterRouter: written only by the
+	// cluster/set-aliases dispatch and read only at bring-up, both on the
+	// codec read goroutine (or at process start, before that loop exists),
+	// so neither side takes a lock. The slice is replaced whole, never
+	// mutated in flight; routers clone it on install.
+	clusterAliasDoc []noderec.ModelAlias
 }
 
 // NewProxy builds a facade-less process host. Facades arrive via
@@ -817,16 +857,23 @@ var modelListClient = &http.Client{
 	Timeout: proxyDialTimeout,
 }
 
-// shutdown stops every facade and then releases the process-wide outbound
-// transport pool. The pool is closed here rather than in facade.stopServing
-// because it is shared: closing it per facade would drop another engine's
-// pooled connections to every peer.
+// shutdown stops every facade, the cluster endpoint, and then releases the
+// process-wide outbound transport pool. The pool is closed here rather than in
+// facade.stopServing or the endpoint's stop because it is shared: closing it
+// per service would drop another engine's pooled connections to every peer.
+// The endpoint is closed here even though its own context also unwinds at
+// teardown, so a caller that reaches shutdown without ever cancelling the
+// serve context still gets the port closed, and stop() tolerates the context
+// path having closed it first.
 func (p *Proxy) shutdown(ctx context.Context) {
-	// Every facade, then the shared transports: the pool is process-wide, so
-	// closing it before a facade has drained would cut that facade's own
-	// in-flight upstream connections.
+	// Every facade, then the cluster endpoint, then the shared transports: the
+	// pool is process-wide, so closing it before a service has drained would
+	// cut that service's own in-flight upstream connections.
 	for _, f := range p.enabledFacades() {
 		f.stopServing(ctx)
+	}
+	if p.clusterRouter != nil {
+		p.clusterRouter.stop()
 	}
 	p.closeIdleTransports()
 }
@@ -1272,7 +1319,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		held  reservation
 	)
 	if isInf && model != "" {
-		candidates, held = p.reserveCandidate(f, candidates)
+		candidates, held = p.reserveCandidate(f.SelectedID(), candidates)
 	}
 	// Released exactly once, whichever way the request ends: normal unwind,
 	// client disconnect, or an early return below. Without this a node stays
@@ -1622,7 +1669,7 @@ func (f *facade) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		defer resMu.Unlock()
 		p.releaseReservation(held)
 		var out []candidate
-		out, held = p.reserveCandidate(f, cands)
+		out, held = p.reserveCandidate(f.SelectedID(), cands)
 		return out
 	}
 
@@ -2231,17 +2278,20 @@ type reservation struct {
 //
 // Model eligibility was enforced before this function receives the list. An
 // explicit node/select pin bypasses reservations, and unlisted/manual owners
-// retain their existing fallback position.
+// retain their existing fallback position. The pin is passed as its node id
+// rather than read from a facade because a pin is a facade concept while the
+// ledger is not: the cluster router has no engine to inherit a pin from and
+// passes the empty string, which means "nothing is exempt".
 //
 // The reservation map is process-wide while the route pin is per facade, so
-// this stays a host method and takes the facade whose request it is serving.
-// Process-wide is the point: two facades bursting at once are competing for the
-// same GPU, so a dispatch through either has to be visible to the other.
-func (p *Proxy) reserveCandidate(f *facade, candidates []candidate) ([]candidate, reservation) {
+// this stays a host method. Process-wide is the point: two facades bursting at
+// once are competing for the same GPU, so a dispatch through either has to be
+// visible to the other.
+func (p *Proxy) reserveCandidate(selectedID string, candidates []candidate) ([]candidate, reservation) {
 	if len(candidates) == 0 {
 		return candidates, reservation{}
 	}
-	if selectedID := f.SelectedID(); selectedID != "" {
+	if selectedID != "" {
 		for _, cand := range candidates {
 			if cand.id == selectedID {
 				return candidates, reservation{}
@@ -2871,6 +2921,15 @@ func (p *Proxy) handleMessage(msg *Message) {
 			f.replaceSubscribed(msg.Params)
 		}
 		return
+	case noderec.NotifyPeerAliases:
+		// Process-scoped alias feed for the cluster router. The router's
+		// bring-up is the only thing that subscribes to it, so arriving with
+		// no router means the two ends disagree about who has an endpoint —
+		// drop the snapshot rather than buffer aliases nobody will read.
+		if p.clusterRouter != nil {
+			p.clusterRouter.replacePeerAliases(msg.Params)
+		}
+		return
 	}
 
 	if !msg.IsRequest() {
@@ -2919,6 +2978,91 @@ func (p *Proxy) handleMessage(msg *Message) {
 		slog.Info("facade enabled", "engine", result.Engine, "port", result.Port)
 		if err := p.codec.Respond(msg.ID, result); err != nil {
 			log.Printf("failed to respond to facade/enable: %v", err)
+		}
+
+	case "cluster/set-aliases":
+		var params routerSetAliasesParams
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			p.codec.RespondError(msg.ID, -32602, `invalid params: expected {"aliases": [{"name": ..., "model": ...}]}`)
+			return
+		}
+		// The document is configuration and it is kept, with or without an
+		// endpoint. The broker couriers it once per consumer bring-up and
+		// again on change, so refusing a router-less push would leave an
+		// endpoint started later routing only exact native names until
+		// somebody re-saved the list; storing costs nothing while no
+		// listener means no routing, and bringUpRouter installs the stored
+		// document before a new endpoint serves. There is deliberately no
+		// validation here — the list was validated where it was written.
+		p.clusterAliasDoc = params.Aliases
+		if p.clusterRouter != nil {
+			p.clusterRouter.setAliases(params.Aliases)
+		}
+		if err := p.codec.Respond(msg.ID, map[string]bool{"ok": true}); err != nil {
+			log.Printf("failed to respond to cluster/set-aliases: %v", err)
+		}
+
+	// Brings the cluster routing endpoint up or down at runtime. Applied
+	// inline on this goroutine. A turn-off closes the listener without
+	// draining, so a generation mid-flight keeps streaming on its
+	// already-accepted connection while the reply goes out at once; a rebind
+	// to a port somebody else holds is refused with codeRouterBindFailed and
+	// changes nothing, the endpoint that already serves left alone. The reply
+	// is the endpoint state after the change, read off the live listener
+	// rather than the requested port.
+	case "router/set-enabled":
+		var params routerSetEnabledParams
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			p.codec.RespondError(msg.ID, -32602, `invalid params: expected {"enabled": true|false, "port": ...}`)
+			return
+		}
+		status, err := p.setRouterEnabled(params)
+		if err != nil {
+			code := -32000
+			if stderrors.Is(err, errRouterBindFailed) {
+				code = codeRouterBindFailed
+			}
+			// No "port" attribute: params.Port is 0 when the default port was
+			// attempted, and every failure here is a bind refusal whose
+			// message already names the port actually tried.
+			slog.Warn("router/set-enabled failed", "err", err)
+			p.codec.RespondError(msg.ID, code, err.Error())
+			return
+		}
+		if err := p.codec.Respond(msg.ID, status); err != nil {
+			log.Printf("failed to respond to router/set-enabled: %v", err)
+		}
+
+	// The cluster endpoint's bound state, read on demand rather than pushed.
+	// The desktop asks this when the Endpoints modal opens and shows a row only
+	// for an endpoint that answers, so the reply comes from the live listener
+	// and never from the --cluster-router-port value.
+	//
+	// A process with no router — switch off, or a port somebody else already
+	// holds — answers "there is none" instead of an error. That is a normal
+	// configuration, and a failed lookup would read as a broken endpoint rather
+	// than an absent one.
+	case "router/status":
+		status := routerStatusResult{}
+		if p.clusterRouter != nil {
+			status = p.clusterRouter.status()
+		}
+		if err := p.codec.Respond(msg.ID, status); err != nil {
+			log.Printf("failed to respond to router/status: %v", err)
+		}
+
+	// The cluster alias view: what this node routes by, with each name's
+	// origin. Same reason as router/status to answer a router-less process
+	// with a normal (empty) reply instead of an error — the desktop reads both
+	// to draw one card, and "no cluster endpoint" and "no visible aliases" are
+	// both ordinary states, not failures worth a client-side error branch.
+	case "router/get-aliases":
+		view := routerAliasesResult{}
+		if p.clusterRouter != nil {
+			view = p.clusterRouter.aliasesView()
+		}
+		if err := p.codec.Respond(msg.ID, view); err != nil {
+			log.Printf("failed to respond to router/get-aliases: %v", err)
 		}
 
 	case "nodes/list":

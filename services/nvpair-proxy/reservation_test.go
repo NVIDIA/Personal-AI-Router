@@ -39,7 +39,7 @@ func reservationCandidates(ids ...string) []candidate {
 
 func reservedID(p *Proxy, candidates []candidate) string {
 	candidates = append([]candidate(nil), candidates...)
-	ordered, _ := p.reserveCandidate(p.soleFacade(), candidates)
+	ordered, _ := p.reserveCandidate(p.soleFacade().SelectedID(), candidates)
 	return ordered[0].id
 }
 
@@ -255,7 +255,7 @@ func TestReserveCandidate_PreservesFailoverAndSnapshotReset(t *testing.T) {
 			{ID: "c", Pending: 6},
 		},
 	})
-	got, _ := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b", "c"))
+	got, _ := p.reserveCandidate(p.soleFacade().SelectedID(), reservationCandidates("a", "b", "c"))
 	require.Equal(t, []string{"b", "a", "c"}, candidateIDsFrom(got), "reserved failover order")
 
 	applySnapshot(p, schedulerwire.Priority{
@@ -301,7 +301,7 @@ func TestReleasedReservation_StopsCountingAsLoad(t *testing.T) {
 	p := prProxy(t)
 	flatPriority(p, 1, "a", "b")
 
-	_, held := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
+	_, held := p.reserveCandidate(p.soleFacade().SelectedID(), reservationCandidates("a", "b"))
 	require.True(t, held.held, "no reservation was taken on a flat snapshot")
 	require.Equal(t, 1, reservationCount(p, held.nodeID), "reservation count for")
 
@@ -322,13 +322,13 @@ func TestReleaseFromBeforeASnapshot_IsIgnored(t *testing.T) {
 	p := prProxy(t)
 	flatPriority(p, 1, "a", "b")
 
-	_, stale := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
+	_, stale := p.reserveCandidate(p.soleFacade().SelectedID(), reservationCandidates("a", "b"))
 	require.True(t, stale.held, "no reservation was taken")
 
 	// A new snapshot arrives, resetting reservations, and another request
 	// reserves against it.
 	flatPriority(p, 2, "a", "b")
-	_, fresh := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
+	_, fresh := p.reserveCandidate(p.soleFacade().SelectedID(), reservationCandidates("a", "b"))
 	freshCount := reservationCount(p, fresh.nodeID)
 
 	// The first request now finishes.
@@ -346,7 +346,7 @@ func TestFailover_MovesTheReservationToTheServingNode(t *testing.T) {
 	p := prProxy(t)
 	flatPriority(p, 1, "a", "b")
 
-	_, held := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
+	_, held := p.reserveCandidate(p.soleFacade().SelectedID(), reservationCandidates("a", "b"))
 	from := held.nodeID
 	to := "a"
 	if from == to {
@@ -371,8 +371,8 @@ func TestReservations_AreSharedAcrossFacades(t *testing.T) {
 	flatPriority(p, 1, "a", "b")
 
 	// Same host, so this stands in for a second facade's request.
-	_, first := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
-	_, second := p.reserveCandidate(p.soleFacade(), reservationCandidates("a", "b"))
+	_, first := p.reserveCandidate(p.soleFacade().SelectedID(), reservationCandidates("a", "b"))
+	_, second := p.reserveCandidate(p.soleFacade().SelectedID(), reservationCandidates("a", "b"))
 
 	require.NotEqual(t, second.nodeID, first.nodeID, "both dispatches chose")
 	assert.Equal(t, 1, reservationCount(p, first.nodeID), "node")

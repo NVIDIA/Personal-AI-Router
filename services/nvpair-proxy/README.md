@@ -66,6 +66,8 @@ parameter, because one flag cannot carry multiple engines' plans.
 |------|---------|-------------|
 | `--ipc` | *(empty — use stdio)* | Path to a Unix domain socket or Windows named pipe for IPC |
 | `--cluster-dir` | *(empty)* | Cluster trust directory (`node.crt`/`node.key` plus trusted pins). Enables the LAN mTLS inference ingress while this node is a cluster member; empty means no ingress and no peer candidates. |
+| `--cluster-router` | `false` | Start the **cluster routing endpoint** on loopback (OpenAI-compatible surface, every engine, model aliasing). The broker passes it when the desktop's Cluster Settings switch is on. |
+| `--cluster-router-port` | `9999` | Port for that endpoint when `--cluster-router` is set; loopback-only regardless of the value. Occupied is non-fatal: no cluster endpoint, every engine facade unaffected. |
 | `--log-level` | *(`$NVPAIR_LOG_LEVEL`, else `info`)* | Initial log level: `debug`, `info`, `warn`, or `error`. Changeable at runtime with `log/set-level`. |
 | `--version` | | Print version and exit |
 
@@ -171,6 +173,67 @@ Combined model lists forward the caller's origin and end-to-end headers, excludi
 Every engine facade uses nvpair-shared/cors. No facade reads engine environment variables or parses launch commands to determine CORS policy.
 
 One limit is outside the proxy's control: current Chromium-based browsers gate a request from a public origin to a local or loopback address behind the user's [Local Network Access](https://chromestatus.com/feature/5152728072060928) permission, which replaced the old server-side opt-in header. No header the proxy sends can grant that. A hosted page needs the permission plus a `fetch(url, { targetAddressSpace: 'loopback' })` annotation; a page served from the local machine is unaffected.
+
+### Cluster routing endpoint
+
+A facade fronts one engine, so a client using it must know which engine owns the
+model. The cluster routing endpoint removes that: one OpenAI-compatible listener
+that routes a requested model name to **whoever provides it in the cluster** —
+any node, any engine — and rewrites the body's `model` to the identifier that
+provider expects. Point a client at it and name a model; nothing downstream
+changes when the weights move between machines.
+
+Its surface is `GET /v1/models` and the inference POST routes. The model list is
+**generated**, not fetched: it is built from the same resolution that routes, so a
+name never appears in the listing without being routable, and every row's
+`owned_by` is `cluster` because the answering engine is not decided at list time.
+Anything else is refused locally (`404 not-routable`), including paths a facade
+would forward verbatim: this endpoint has no single engine to default to. A path
+only one engine declares (`/api/chat` and friends) is routed only to providers of
+that engine — dialect before distance.
+
+**Model aliases** are the second half of the feature: `{ name, model }` pairs that
+make a friendly name a synonym for a model. Resolution tries the name exactly as
+spelled across every engine, then each engine's naming convention, then the alias
+list — so an alias can never shadow a model that was literally renamed to the
+alias name. An alias names a model rather than a machine, so the same two strings
+route on every computer that hears them, each answering with the hosts it can
+actually see holding that model; when several machines define one name, every
+definition that can serve it contributes its hosts, and a name two machines serve
+routes to both. Expansion happens once: an alias whose target is itself a
+configured name resolves to nothing.
+
+The endpoint hears aliases from two places, and neither is a file it reads:
+`cluster/set-aliases` replaces **this node's** configured list (immediately, as
+the broker relays what its settings service holds), while a `cluster:peer-aliases`
+snapshot replaces the list **pinned peers** announce — announced by each node's
+engine-manager and relayed by the broker, so a peer with every engine stopped
+still contributes its aliases. `router/get-aliases` reports what this node routes
+by, one row per definition with the origin of the machine that wrote it, and
+`router/status` reports whether the endpoint is actually bound — the desktop draws
+its Endpoints row and read-only aliases-from-other-nodes card from those two
+answers rather than from the port it asked for, which a bind failure would
+otherwise have quietly overridden. `router/set-enabled` is how the endpoint
+arrives or leaves at runtime: it binds a named port (an omitted port takes the
+default) or closes the listener, applying inline on the read loop — a turn-off
+answers at once and leaves an in-flight generation streaming on its accepted
+connection, and a port somebody else holds is refused with `-32011` without
+disturbing the endpoint that already serves.
+Process-scoped names, all four: the router is not an engine, so nothing here
+carries an engine prefix.
+
+Two properties are worth stating up front, because they look like omissions.
+**Loopback-only is the posture:** this endpoint routes to any node in the cluster,
+so exposing it in plaintext to a network would be a routing oracle for the whole
+cluster; each node runs its own, and the cross-node hop goes over the engine
+endpoints, which are already pin-gated. **And every hop is terminal:** the peer
+that receives a routed request forwards it to its own local engine and never
+re-routes, so a cluster-routed request is dialled exactly once. Requests here
+report as jobs with `engine: "cluster"`, which is what keeps their ids separate
+from both engines' numbering. Load is counted on the same process-wide ledger the
+facades use, so a burst through the endpoint and a burst through a facade see each
+other. The semantics, refusals, and the list of what is deliberately left out are
+in `spec.md` §5.12.
 
 ### Node selection
 

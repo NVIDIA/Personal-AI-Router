@@ -15,6 +15,21 @@ export const MODULAR_CLUSTER_MANAGER_PORT = 14321
 
 export const MODULAR_OPENAI_API_BASE_PATH = '/v1'
 
+/**
+ * Default port for the cluster routing endpoint, mirroring `routerDefaultPort`
+ * in `services/nvpair-proxy`. The desktop only passes `--cluster-router-port`
+ * when the user picks something else, so the two numbers have to agree.
+ */
+export const MODULAR_CLUSTER_ROUTER_DEFAULT_PORT = 9999
+
+/**
+ * Port range a configured cluster endpoint may use. PAIR runs the proxy as the
+ * signed-in user, so a port below 1024 cannot be bound at all: accepting one
+ * would look like a working setting until the first request failed.
+ */
+export const MODULAR_CLUSTER_ROUTER_MIN_PORT = 1_024
+export const MODULAR_CLUSTER_ROUTER_MAX_PORT = 65_535
+
 // Log levels accepted by every backend binary's shared `applog` package
 // (`--log-level` flag / `log/set-level` JSON-RPC). Order is least→most severe.
 export const MODULAR_LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const

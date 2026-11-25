@@ -37,10 +37,11 @@ import { parseEngineSettings } from './engine-settings'
 import { resolvePullCatchError } from './pull-error-handling'
 import { serviceLogLevel } from './service-log-level'
 import { engineManagerName } from '@/shared/utils/engines'
-import { isFirstRun } from '@/electron/config/ui-config'
+import { getClusterRouterConfig, isFirstRun } from '@/electron/config/ui-config'
 import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
 import {
     MODULAR_CANCEL_PULL_TIMEOUT_MS,
+    MODULAR_CLUSTER_ROUTER_DEFAULT_PORT,
     MODULAR_DEFAULT_LOG_LEVEL,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS,
     MODULAR_INVITE_STATUS_POLL_INTERVAL_MS,
@@ -809,6 +810,19 @@ class ModularSupervisor {
         // streams, and fans its schedule:priority out to the proxies via
         // node/set-priority (all broker-internal).
         passPath('--scheduler-path', 'job-scheduler')
+        // The cluster routing endpoint is a product surface, so the desktop
+        // decides whether the proxy serves one and on which loopback port, from
+        // the Cluster Settings card. The broker flag defaults to off, hence
+        // passing it whenever the preference says on; the port flag is only for
+        // a non-default port, since the broker forwards 0/absent as "use the
+        // child's own default".
+        const clusterRouter = getClusterRouterConfig()
+        if (clusterRouter.enabled) {
+            args.push('--cluster-router')
+            if (clusterRouter.port !== MODULAR_CLUSTER_ROUTER_DEFAULT_PORT) {
+                args.push('--cluster-router-port', String(clusterRouter.port))
+            }
+        }
         return [...args, ...this.logLevelArgs()]
     }
 
