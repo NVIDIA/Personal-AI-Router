@@ -4,8 +4,11 @@
 package mdns
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"sort"
@@ -556,7 +559,10 @@ func TestSendGoodbye_SendsOneGoodbyePerInterfaceScopedToItsOwnAddresses(t *testi
 // dead interface must still not suppress the other retractions.
 func TestSendGoodbye_LogsWarnAndKeepsOtherInterfacesWhenOneSendFails(t *testing.T) {
 	r := testResponder([]string{"v=1"})
-	logs := captureDebugLogs(t)
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
 	attempts := captureGoodbyeSends(t, func(ifIndex int) error {
 		if ifIndex == 1 {
 			return errors.New("synthetic send failure on interface 1")
@@ -574,21 +580,24 @@ func TestSendGoodbye_LogsWarnAndKeepsOtherInterfacesWhenOneSendFails(t *testing.
 	assert.Equal(t, []int{1, 2}, attempted,
 		"a failed send on interface 1 must not suppress interface 2's retraction")
 
-	gotLogs := logs.String()
-	assert.Contains(t, gotLogs, "level=WARN",
+	var entry struct {
+		Level   string `json:"level"`
+		Iface   string `json:"iface"`
+		IfIndex int    `json:"ifIndex"`
+	}
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+	assert.Equal(t, "WARN", entry.Level,
 		"a goodbye send failure must be visible at the warn level the desktop default configures, which is where a silent 120s stale record becomes discoverable")
-	assert.Contains(t, gotLogs, "ifIndex=1",
+	assert.Equal(t, 1, entry.IfIndex,
 		"the goodbye failure line must name which interface index failed")
 	// The interface name half is exactly as available to this test as it is
 	// to production: net.InterfaceByIndex is a fact about the host, and a
 	// fixture index that resolves nowhere gets logged by index only. The
 	// ifIndex and WARN assertions above hold either way.
 	if ifi, err := net.InterfaceByIndex(1); err == nil {
-		assert.Contains(t, gotLogs, "iface="+ifi.Name,
+		assert.Equal(t, ifi.Name, entry.Iface,
 			"the goodbye failure line must name the interface, not only its index")
 	}
-	assert.NotContains(t, gotLogs, "ifIndex=2",
-		"the interface whose send succeeded must not be reported as failed")
 }
 
 // TestSendGoodbye_LogsWarnAndKeepsOtherInterfacesWhenOneGoodbyeCannotBePacked
