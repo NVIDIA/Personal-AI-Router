@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { BrowserWindow } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { nativeImage } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import type { OverviewCommand, OverviewMessage } from '@/shared/types/overview'
 import { createStructuredLogger } from '@/shared/utils/log'
 import { openExternalSafe } from '@/electron/open-external'
+import { createDockVisibilityController } from '@/electron/dock-visibility'
+import { getHideDockIconInBackground } from '@/electron/config/ui-config'
+import { currentPlatform } from '@/shared/utils/platform'
 
 const MIN_DIMENSION = 420
 
@@ -192,6 +195,11 @@ function getOverviewWindow(): BrowserWindow | null {
     return overviewWindow && !overviewWindow.isDestroyed() ? overviewWindow : null
 }
 
+export const refreshDockVisibility = createDockVisibilityController(() => {
+    const window = getOverviewWindow()
+    return window !== null && (window.isVisible() || window.isMinimized())
+})
+
 /**
  * Flush queued Overview commands once the renderer has mounted and subscribed
  * (signalled via `overview:ready`). Until then they stay queued so a freshly
@@ -307,9 +315,31 @@ export function createOverviewWindow(): void {
     overviewReady = false
     overviewWindow = window
 
+    window.on('show', refreshDockVisibility)
+    window.on('hide', refreshDockVisibility)
+    window.on('focus', refreshDockVisibility)
+    window.on('minimize', refreshDockVisibility)
+    window.on('restore', refreshDockVisibility)
+    // Application Hide emits no window hide event; order it out so the popup
+    // can activate PAIR without macOS restoring Overview along with it.
+    window.on('blur', () =>
+        setImmediate(() => {
+            if (
+                currentPlatform() === 'darwin' &&
+                getHideDockIconInBackground() &&
+                app.isHidden() &&
+                !window.isDestroyed()
+            ) {
+                window.hide()
+            }
+            refreshDockVisibility()
+        })
+    )
+
     window.on('closed', () => {
         overviewWindow = null
         overviewReady = false
+        refreshDockVisibility()
     })
 
     window.once('show', () => {

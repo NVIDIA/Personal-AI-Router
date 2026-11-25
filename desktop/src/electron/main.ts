@@ -6,7 +6,11 @@ import { electronApp } from '@electron-toolkit/utils'
 
 import { buildCspHeader } from '@/electron/csp'
 import { registerApplicationIconMenu } from '@/electron/application-icon-menu'
-import { createOverviewWindow, onOverviewFirstShown } from '@/electron/window'
+import {
+    createOverviewWindow,
+    onOverviewFirstShown,
+    refreshDockVisibility
+} from '@/electron/window'
 import { registerWindowShortcuts } from '@/electron/window-shortcuts'
 import { initTray, destroyTray } from '@/electron/tray'
 import { createStructuredLogger } from '@/shared/utils/log'
@@ -187,6 +191,7 @@ if (!gotTheLock || exitRequested) {
             createOverviewWindow()
         }
         initTray()
+        if (hiddenLaunch) refreshDockVisibility()
 
         reconcileLoginItemAtLaunch()
 

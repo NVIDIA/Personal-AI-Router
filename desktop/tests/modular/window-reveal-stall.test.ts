@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { SupportedPlatform } from '@/shared/types/platform'
 
 /**
  * A renderer whose `file://` navigation never completes emits no `did-finish-load`,
@@ -12,6 +13,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  */
 
 const mocks = vi.hoisted(() => {
+    const state: { platform: SupportedPlatform; enabled: boolean; appHidden: boolean } = {
+        platform: 'linux',
+        enabled: false,
+        appHidden: false
+    }
     type Listener = (...args: unknown[]) => void
 
     class FakeEmitter {
@@ -45,6 +51,9 @@ const mocks = vi.hoisted(() => {
 
         webContents = new FakeWebContents()
         show = vi.fn()
+        hide = vi.fn()
+        isVisible = vi.fn(() => false)
+        isMinimized = vi.fn(() => false)
         focus = vi.fn()
         loadFile = vi.fn(() => Promise.resolve())
         loadURL = vi.fn(() => Promise.resolve())
@@ -58,14 +67,25 @@ const mocks = vi.hoisted(() => {
     }
 
     return {
+        state,
+        hideDock: vi.fn<() => void>(),
         BrowserWindow: FakeBrowserWindow,
         logged: [] as { level: string; sublevel?: string; message: string }[]
     }
 })
 
 vi.mock('electron', () => ({
+    app: {
+        isHidden: () => mocks.state.appHidden,
+        dock: { isVisible: () => true, hide: mocks.hideDock }
+    },
     BrowserWindow: mocks.BrowserWindow,
     nativeImage: { createFromPath: () => ({}) }
+}))
+
+vi.mock('@/shared/utils/platform', () => ({ currentPlatform: () => mocks.state.platform }))
+vi.mock('@/electron/config/ui-config', () => ({
+    getHideDockIconInBackground: () => mocks.state.enabled
 }))
 
 vi.mock('@electron-toolkit/utils', () => ({ is: { dev: false } }))
@@ -88,7 +108,7 @@ vi.mock('@/shared/utils/log', () => {
     }
 })
 
-import { createOverviewWindow } from '@/electron/window'
+import { createOverviewWindow, refreshDockVisibility } from '@/electron/window'
 
 /** The reveal reasons recorded so far, in order. */
 function shownReasons(): string[] {
@@ -115,6 +135,10 @@ describe('overview window reveal', () => {
         vi.useFakeTimers()
         mocks.BrowserWindow.instances = []
         mocks.logged.length = 0
+        mocks.state.platform = 'linux'
+        mocks.state.enabled = false
+        mocks.state.appHidden = false
+        mocks.hideDock.mockClear()
     })
 
     afterEach(() => {
@@ -210,5 +234,83 @@ describe('overview window reveal', () => {
 
         vi.advanceTimersByTime(60_000)
         expect(window.loadFile).toHaveBeenCalledTimes(2)
+    })
+
+    it('orders an application-hidden Overview out before the popup can reactivate it', () => {
+        mocks.state.platform = 'darwin'
+        mocks.state.enabled = true
+        const window = openOverview()
+
+        window.emit('blur')
+        mocks.state.appHidden = true
+        vi.advanceTimersByTime(0)
+
+        expect(window.hide).toHaveBeenCalledOnce()
+    })
+
+    it('leaves Overview visible when focus moves to another application', () => {
+        mocks.state.platform = 'darwin'
+        mocks.state.enabled = true
+        const window = openOverview()
+        window.isVisible.mockReturnValue(true)
+
+        window.emit('blur')
+        vi.advanceTimersByTime(0)
+
+        expect(window.hide).not.toHaveBeenCalled()
+    })
+
+    it('preserves macOS application Hide behavior when the setting is off', () => {
+        mocks.state.platform = 'darwin'
+        mocks.state.appHidden = true
+        const window = openOverview()
+
+        window.emit('blur')
+        vi.advanceTimersByTime(0)
+
+        expect(window.hide).not.toHaveBeenCalled()
+    })
+
+    it('keeps the Dock icon when a minimized Overview reports invisible', () => {
+        mocks.state.platform = 'darwin'
+        mocks.state.enabled = true
+        const window = openOverview()
+        window.isMinimized.mockReturnValue(true)
+
+        window.emit('minimize')
+        window.emit('hide')
+        window.emit('blur')
+        vi.advanceTimersByTime(0)
+
+        expect(mocks.hideDock).not.toHaveBeenCalled()
+    })
+
+    it('hides the Dock icon when a minimized Overview is closed', () => {
+        mocks.state.platform = 'darwin'
+        mocks.state.enabled = true
+        const window = openOverview()
+        window.isMinimized.mockReturnValue(true)
+
+        window.emit('closed')
+
+        expect(mocks.hideDock).toHaveBeenCalledOnce()
+    })
+
+    it('applies the Dock preference with no Overview window at hidden startup', () => {
+        mocks.state.platform = 'darwin'
+        mocks.state.enabled = true
+
+        refreshDockVisibility()
+
+        expect(mocks.BrowserWindow.instances).toHaveLength(0)
+        expect(mocks.hideDock).toHaveBeenCalledOnce()
+    })
+
+    it('keeps the Dock icon at hidden startup when the preference is off', () => {
+        mocks.state.platform = 'darwin'
+
+        refreshDockVisibility()
+
+        expect(mocks.hideDock).not.toHaveBeenCalled()
     })
 })
