@@ -112,7 +112,9 @@ ships in `cli-bin` and the app's updater replaces it.
 
 `p` opens a catalog browser over the engine's downloadable models, served by the
 backend's `engine:catalog`. Sorting (`o`) is local. So is filtering (`/`) for a
-source that cannot search, such as Ollama's list of thousands of entries. For
+source that cannot search, such as Ollama's list of thousands of entries and
+MTPLX's pack list — a couple of dozen entries, all Apple Silicon only, so a peer
+that is not one is handed none of them. For
 one whose reply says it is `searchable` — llama.cpp's selected model source —
 `/` sends the query upstream instead, and `c` returns to the browse list.
 For a peer's llama.cpp engine, each browse/search reads that peer's saved

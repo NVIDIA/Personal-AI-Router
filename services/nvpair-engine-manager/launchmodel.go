@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	settings "nvpair-shared/enginesettings"
 )
@@ -78,6 +80,43 @@ func (l *launchEdit) start(ctx context.Context) error {
 		return err
 	}
 	return l.e.setDesiredEnabled(l.engine, true)
+}
+
+// launchModelResolvePackPath is the one lookup a manifest can ask ActionLaunchModel to
+// run on the model its caller named: replace the pack with the directory that pack's own
+// listing keeps it in. MTPLX needs it because `serve --model <repository id>` runs a
+// completeness gate before loading, including a Qwen-specific one, while
+// `serve --model <existing path>` does not — and the directory is what its own app
+// launches with, what /health reports back, and the only one of its three spellings that
+// says which machine's cache the pack sits in.
+const launchModelResolvePackPath = "pack-path"
+
+// launchModelValueFor returns the value to write into the launch for the model the caller
+// named, as spec.Resolve asks.
+//
+// It fails open, always returning something to write rather than an error: the value the
+// lookup cannot place is one PAIR does not know, and the alternatives are worse than
+// writing what the user typed — inventing a path, or refusing to load an engine the user
+// can start by hand. The lookup being unavailable counts as not knowing: a cache listing
+// that did not arrive says nothing about whether this pack has a directory, not that it has
+// none. Callers hold the engine's operation lock, so the listing is read here rather than
+// before it: a pack that moved or was deleted while the caller waited is answered with the
+// listing the launch is written against, not one from before the lock.
+func (e *Executor) launchModelValueFor(ctx context.Context, engine string, spec *ActionLaunchModel, model string) string {
+	if spec.Resolve != launchModelResolvePackPath {
+		return model
+	}
+	rows, ok := e.packInventoryFrom(ctx, engine, inventoryAnswer{})
+	if !ok {
+		slog.Debug("engine:pack listing unreadable, launching the model as it was named", "engine", engine)
+		return model
+	}
+	row, found := packRowForRepoID(rows, model)
+	if !found {
+		slog.Debug("engine:pack listing holds no row for this model, launching it as it was named", "engine", engine, "rows", len(rows))
+		return model
+	}
+	return row.path
 }
 
 // switchLaunchModel is the launch_model action. An engine that serves one model
@@ -163,10 +202,24 @@ func (e *Executor) changeLaunchModel(ctx context.Context, engine string, spec *A
 		if !current.Editable {
 			return fmt.Errorf("the launch settings of engine %q cannot be changed: %s", engine, current.Reason)
 		}
-		text, changed, err := withLaunchFlag(current.LaunchText, spec.Flag, model)
+		// The model is written where the engine will read it, which for an engine that
+		// takes a directory rather than a name is not the string the caller sent.
+		value := e.launchModelValueFor(ctx, engine, spec, model)
+		text, set, err := withLaunchFlags(current.LaunchText, spec.Flags, value)
 		if err != nil {
 			return err
 		}
+		// A flag this action stopped writing is emptied alongside the change, so a name
+		// for some other pack cannot outlive the pack it was written for. Writing first
+		// matters: clearing the flags the write manages would undo it.
+		text, cleared, err := withoutLaunchFlags(text, spec.ClearFlags)
+		if err != nil {
+			return err
+		}
+		// Repairing a leftover is a change of its own: an engine running on arguments
+		// that name a second pack has to be started on the ones just saved, however
+		// correct the flag it loads from already is.
+		changed := set || cleared
 		if !changed && current.Running {
 			return nil
 		}
@@ -244,6 +297,38 @@ func withLaunchFlag(text, flag, value string) (result string, changed bool, err 
 	return result, !slices.Equal(tokens, out), err
 }
 
+// withLaunchFlags sets one model in every flag an engine's action writes, in the
+// order the manifest declares them. Each flag it manages is left holding exactly
+// this value, so a flag the same transaction also has to empty is emptied after
+// this rather than before: see ActionLaunchModel.ClearFlags.
+func withLaunchFlags(text string, flags []string, value string) (string, bool, error) {
+	changed := false
+	for _, flag := range flags {
+		next, flagChanged, err := withLaunchFlag(text, flag, value)
+		if err != nil {
+			return "", false, err
+		}
+		text = next
+		changed = changed || flagChanged
+	}
+	return text, changed, nil
+}
+
+// withoutLaunchFlags clears every flag in flags. See withLaunchFlags for why an
+// engine can name its model in more than one place.
+func withoutLaunchFlags(text string, flags []string) (string, bool, error) {
+	changed := false
+	for _, flag := range flags {
+		next, flagChanged, err := withoutLaunchFlag(text, flag)
+		if err != nil {
+			return "", false, err
+		}
+		text = next
+		changed = changed || flagChanged
+	}
+	return text, changed, nil
+}
+
 // withoutLaunchFlag returns launch text with every "flag value" and
 // "flag=value" before any "--" terminator removed, and whether any was.
 func withoutLaunchFlag(text, flag string) (result string, changed bool, err error) {
@@ -289,12 +374,52 @@ func dropLaunchFlag(tokens []string, flag string) (rest []string, at int) {
 	return rest, at
 }
 
-// modelLaunchFlag is the flag an engine's launch_model action writes, or "" for
-// an engine that does not choose its model by launch argument.
-func modelLaunchFlag(m *Manifest) string {
+// modelLaunchSpec returns the launch_model action an engine's manifest declares, or nil
+// for an engine that does not choose its model by launch argument. The manifest declares
+// at most one, so which one does not have to be worked out.
+func modelLaunchSpec(m *Manifest) *ActionLaunchModel {
 	for _, act := range m.Actions {
 		if act.LaunchModel != nil {
-			return act.LaunchModel.Flag
+			return act.LaunchModel
+		}
+	}
+	return nil
+}
+
+// modelLaunchFlags returns the flags an engine's launch_model action writes, or
+// nil for an engine that does not choose its model by launch argument. This is the
+// answer for a reader asking which model is selected, so it names only the flags
+// that carry a model the engine will load: see modelClearFlags for a reader that is
+// taking the model away.
+func modelLaunchFlags(m *Manifest) []string {
+	spec := modelLaunchSpec(m)
+	if spec == nil {
+		return nil
+	}
+	return spec.Flags
+}
+
+// modelClearFlags returns every flag that has to be left without a model when the
+// engine stops serving one: the ones the action writes, and the ones it declares it no
+// longer writes but the engine still takes. A leftover in the second kind is a model name
+// still being handed to the engine at the next start, which for a launch-flag engine is
+// how an engine comes back with a pack no list and no user named.
+func modelClearFlags(m *Manifest) []string {
+	spec := modelLaunchSpec(m)
+	if spec == nil {
+		return nil
+	}
+	return spec.clearedFlags()
+}
+
+// launchModelValue returns the model the arguments name, taken from the first
+// model flag they carry. Every flag an engine names its model by says the same
+// model, so any one answers the question; the first is the one it loads its
+// weights from.
+func launchModelValue(tokens []string, flags []string) string {
+	for _, flag := range flags {
+		if value, ok := launchFlagValue(tokens, flag); ok && value != "" {
+			return value
 		}
 	}
 	return ""
@@ -307,6 +432,9 @@ func modelLaunchFlag(m *Manifest) string {
 // wrong one.
 // The served model is asked of the engine itself, not read from the saved
 // launch arguments, because an adopted engine may have been started on another.
+// The names it may be asked under are the engine's answer plus the resident
+// pack's cache id, which for these engines is the spelling the caller has: see
+// ejectableNames.
 func (e *Executor) ejectByStopping(ctx context.Context, engine string, params json.RawMessage) (json.RawMessage, error) {
 	var request struct {
 		Model string `json:"model"`
@@ -339,9 +467,11 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 			return nil
 		}
 		// When the engine cannot say what it serves, it is stopped anyway: Eject
-		// exists to free the GPU, and stopping the engine is all it can do.
+		// exists to free the GPU, and stopping the engine is all it can do. The
+		// residency join being unreadable is that same case (see ejectableNames): the
+		// only name it could have added is the one the user is holding.
 		if model != "" {
-			if serving, err := e.servingModels(ctx, edit.st, engine); err == nil && !slices.Contains(serving, model) {
+			if serving, complete, err := e.ejectableNames(ctx, edit.st, engine); err == nil && complete && !slices.Contains(serving, model) {
 				return fmt.Errorf("%s is not the model %s is serving (%s)", model, engine, strings.Join(serving, ", "))
 			}
 		}
@@ -367,7 +497,7 @@ func (e *Executor) ejectByStopping(ctx context.Context, engine string, params js
 // so no start is needed to enter this state. Callers hold the operation lock and
 // retain their stop request until this transaction finishes.
 func (l *launchEdit) awaitModelAfterEject(ctx context.Context) error {
-	text, _, err := withoutLaunchFlag(l.before.LaunchText, modelLaunchFlag(l.st.manifest))
+	text, _, err := withoutLaunchFlags(l.before.LaunchText, modelClearFlags(l.st.manifest))
 	if err != nil {
 		return err
 	}
@@ -412,4 +542,58 @@ func (e *Executor) servingModels(ctx context.Context, st *engineState, engine st
 		names = append(names, ids...)
 	}
 	return names, nil
+}
+
+// ejectableNames is what one eject may be asked for: every name the engine reports for
+// the models it serves, plus the cache id of the pack the residency join says it has
+// mapped. The join is here because the two spellings are not alike for an engine that
+// serves one pack per process — MTPLX answers requests as
+// "mtplx-flash-next-optimized-speed" while its own cache listing, and so PAIR's model
+// list, calls the same pack by its repo id — and a guard that reads only the served
+// names refuses the pack that really is resident while serving the eject of a name no
+// listing carries.
+//
+// The second result is whether these names are worth refusing on. A join that never
+// answered adds nothing to them and rules nothing out, and for these engines the name the
+// user has is exactly the one that read would have produced: the model list, and so the
+// eject button, carries the cache id. So an unreadable residency is reported as
+// incomplete rather than as a list of one served name, and the eject goes ahead — as it
+// always has on an engine that cannot say what it serves, and with the same result as the
+// Stop button beside it. A join that answered and named another pack, including one whose
+// directory no row holds, is a complete answer and the guard refuses on it, and so is a
+// manifest that declares no residency read at all: that engine has never had a second
+// spelling to offer, which is why its guard refuses exactly as it did before the join.
+//
+// The join gets one probe read's time. Its second half runs through the action machinery,
+// which hands the caller's context to whatever the manifest declared: a request is bound by
+// it, and a `mtplx models --json` subprocess is killed at it — and a CLI that answered and
+// left something behind holding its output is given up on one commandDrainTimeout later,
+// rather than whenever that leftover process decides to exit. An eject is a click, so PAIR
+// stops the engine on the served names rather than leave the user waiting on a listing that
+// is not coming; unbounded, that wait is the action timeout, 30 minutes of a dead button
+// holding the engine's operation lock. The served-names read keeps the bound the action
+// machinery gives it. The join is asked only of an engine that has answered that read, so a
+// stopped engine and one that declares no loaded_models action cost no inventory run at all.
+func (e *Executor) ejectableNames(ctx context.Context, st *engineState, engine string) (names []string, complete bool, err error) {
+	names, err = e.servingModels(ctx, st, engine)
+	if err != nil {
+		return nil, false, err
+	}
+	bound, cancel := context.WithTimeout(ctx, probeReadTimeout)
+	defer cancel()
+	began := time.Now()
+	answer := e.residentJoin(bound, engine, inventoryAnswer{})
+	if !answer.complete {
+		elapsed := time.Since(began).Round(time.Millisecond)
+		if errors.Is(bound.Err(), context.DeadlineExceeded) {
+			slog.Debug("engine:eject gave up waiting for what the engine has mapped", "engine", engine, "action", "unload_model", "elapsed", elapsed)
+		} else {
+			slog.Debug("engine:eject could not read what the engine has mapped", "engine", engine, "action", "unload_model", "elapsed", elapsed)
+		}
+		return names, false, nil
+	}
+	if answer.named {
+		names = append(names, answer.row.repoID)
+	}
+	return names, true, nil
 }

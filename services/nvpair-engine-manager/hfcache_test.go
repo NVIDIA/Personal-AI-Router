@@ -529,7 +529,7 @@ func TestDeleteHFModel_UsesTheCacheSavedBeforeItGetsTheOperationLock(t *testing.
 				platform.Runtime.LaunchEnv = []string{"HF_HUB_CACHE=" + oldCache}
 			}
 			m.Platforms[runtime.GOOS+"/"+runtime.GOARCH] = platform
-			m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flag: "--model"}}
+			m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flags: []string{"--model"}}}
 			m.Actions["delete_model"] = Action{HFCache: &ActionHFCache{Dir: "{hf_hub_cache}", Delete: true, Tool: toolName}}
 			e := newTestExecutor(t, m)
 			e.overrideDir = t.TempDir()

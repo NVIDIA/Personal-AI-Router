@@ -83,9 +83,59 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         deleteBlockedWhileLoaded: true,
         // Load writes the model into the launch arguments and restarts vLLM on it.
         loadRestartsEngine: true,
+        // vLLM takes its model as a launch argument and will not start without
+        // one, so turning it on offers the picker.
+        needsModelSelection: true,
+        // A request naming a cached model prepares it first, which is why the
+        // waiting banner can say a request may load it.
+        loadsModelOnRequest: true,
         engineHub: {
             label: 'vLLM',
             url: 'https://huggingface.co/models?pipeline_tag=text-generation&library=safetensors&sort=trending'
+        }
+    },
+    mtplx: {
+        hasExpiry: false,
+        // MTPLX serves one pack per process and cannot drop it while running, so
+        // Eject stops the engine and Load starts it again on the chosen pack.
+        hasEject: true,
+        // Apple Silicon only, and obtained through Homebrew rather than a copy PAIR
+        // downloads, so an empty list here does not mean "cannot be installed": the
+        // engine card asks the owning node (`canInstall`, which needs a Homebrew
+        // prefix on that machine) and offers the vendor's download page where brew
+        // is missing. The empty list is only what keeps MTPLX out of the onboarding
+        // picker, which would otherwise offer a default install whose tool most
+        // fresh Macs do not have.
+        hasInstall: [],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        // Packs live in MTPLX's own pack cache and its curated list is fetched, so
+        // the model list, Add model, Delete and Load all work while the engine is
+        // stopped (Load starts it): MTPLX is listed in `EnginesListingModelsWhenStopped`
+        // and its list comes from `mtplx models --json`, which answers offline.
+        hasModelSearchOnlyWhenRunning: false,
+        hasDeleteModel: true,
+        // `mtplx remove` has no in-use guard, so the engine manager quits MTPLX and
+        // waits for its port to go quiet before removing a pack the running server
+        // could be holding, and leaves it down (`stop_before`). It is not blocked
+        // the way vLLM blocks, and "eject first" was never a way round it: eject is
+        // the same stop, and with the engine down the model list is hidden and every
+        // row's controls are disabled anyway.
+        stopsEngineBeforeDelete: true,
+        // Load writes the pack's directory into MTPLX's launch arguments and
+        // restarts the engine on them.
+        loadRestartsEngine: true,
+        // Like vLLM, MTPLX takes its pack as a launch argument and PAIR will not
+        // start it without one, so turning it on offers the picker too.
+        needsModelSelection: true,
+        // MTPLX only runs packs built for it, and that list is the only place
+        // they are named, so the hub lists those rather than any safetensors repo.
+        engineHub: {
+            label: 'MTPLX',
+            url: 'https://mtplx.com/releases/models.json'
         }
     }
 }

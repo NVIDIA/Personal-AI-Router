@@ -52,7 +52,8 @@ rm -rf "$HOME/Library/Application Support/Nvidia Corporation/Personal AI Router"
 ```
 
 Downloaded models are not in either directory. Each engine keeps them in its own
-store — `~/.ollama`, `~/.lmstudio/models`, `~/.llamacpp`, and `~/.cache/huggingface` (vLLM) — so deleting the
+store — `~/.ollama`, `~/.lmstudio/models`, `~/.llamacpp`, `~/.cache/huggingface`
+(vLLM), and `~/.mtplx/models` (MTPLX) — so deleting the
 bundle or the configuration directory leaves them in place.
 
 ## Requirements
@@ -60,7 +61,9 @@ bundle or the configuration directory leaves them in place.
 - macOS 12 (Monterey) or newer.
 - 64-bit Intel (`amd64`) or Apple Silicon (`arm64`). The tarball is built per
   arch; pick the one that matches your Mac. `uname -m` on the Mac tells you
-  which: `x86_64` → amd64, `arm64` → arm64.
+  which: `x86_64` → amd64, `arm64` → arm64. MTPLX is the one engine that needs
+  Apple Silicon, so on an Intel Mac it is not listed at all rather than listed and
+  unusable.
 - A working mDNS responder on UDP 5353. macOS's built-in `mDNSResponder` is
   fine; the discovery library coexists with it without configuration.
 
@@ -81,9 +84,12 @@ xattr -dr com.apple.quarantine /path/to/NVIDIA-Personal-AI-Router-<version>
   advertising. Run the broker with `--log-level debug` to see live discovery
   logs on stderr.
 - **"Bind: address already in use"**: the proxies listen on `11434` (Ollama),
-  `1234` (LM Studio), `8080` (llama.cpp), and `8000` (vLLM); another instance of the proxy or
+  `1234` (LM Studio), `8080` (llama.cpp), `8000` (vLLM), and `8100` (MTPLX); another instance of the proxy or
   another process is holding one of them. Find the offender with
-  `lsof -nP -iTCP:11434 -iTCP:1234 -iTCP:8080 -iTCP:8000 -sTCP:LISTEN` and stop it.
+  `lsof -nP -iTCP:11434 -iTCP:1234 -iTCP:8080 -iTCP:8000 -iTCP:8100 -sTCP:LISTEN` and stop it.
+  `8100` is there even on a Mac that cannot run MTPLX: the facade is enabled
+  whether or not anything is behind it, and a peer is only ever promoted while its
+  engine answers the health probe.
 
 Report issues at the project's tracker. Include the broker's `--log-level debug`
 output and your macOS version (`sw_vers`) and architecture (`uname -m`).

@@ -64,7 +64,10 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 
 func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	t.Helper()
-	ports := make([]int, 5)
+	// ports[0] is the fixture's engine-server port, and one further port is
+	// allocated for each facade, so adding an engine to the broker's proxy
+	// table needs no edit here.
+	ports := make([]int, len(engineProxyProfiles)+1)
 	releases := make([]func(), len(ports))
 	for i := range ports {
 		ports[i], releases[i] = reserveSettingsPort(t)
@@ -76,12 +79,11 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	worker, codec := newTestRPCWorkerPipe(t)
 	h.b.setEngineMgr(worker)
 	proxyWorker, proxyCodec := newTestRPCWorkerPipe(t)
-	proxy := &proxyProcess{peer: proxyWorker.peer, facadeState: map[string]proxyFacadeState{
-		"ollama":   {ready: true, port: ports[1]},
-		"lmstudio": {ready: true, port: ports[2]},
-		"llamacpp": {ready: true, port: ports[3]},
-		"vllm":     {ready: true, port: ports[4]},
-	}}
+	facadeState := make(map[string]proxyFacadeState, len(engineProxyProfiles))
+	for i, profile := range engineProxyProfiles {
+		facadeState[profile.Name] = proxyFacadeState{ready: true, port: ports[i+1]}
+	}
+	proxy := &proxyProcess{peer: proxyWorker.peer, facadeState: facadeState}
 	for _, profile := range engineProxyProfiles {
 		h.b.setEngineProxyHandle(profile, proxy)
 	}

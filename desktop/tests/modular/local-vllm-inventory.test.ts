@@ -17,6 +17,17 @@ const activeModel = 'org/active-model'
 const downloadedModel = 'org/downloaded-model'
 let nextNode = 0
 
+/**
+ * The `engine:models` reply vLLM answers with: the packs in the Hugging Face
+ * cache (`downloadedByEngine`) and the model the server is running
+ * (`loadedByEngine`). A vLLM that serves a model straight from a path names it
+ * only in the second one.
+ */
+const snapshot = (loaded: string[], downloaded: string[]): JsonValue => ({
+    downloadedByEngine: { vllm: downloaded },
+    loadedByEngine: { vllm: loaded }
+})
+
 async function startOwner(running: boolean, downloaded: string[]) {
     const state = getModularBridgeState()
     const supervisor = getModularSupervisor()
@@ -53,7 +64,7 @@ async function startOwner(running: boolean, downloaded: string[]) {
     const hasProcess = vi.spyOn(supervisor, 'hasProcess').mockReturnValue(true)
     const call = vi
         .spyOn(supervisor, 'callProcess')
-        .mockResolvedValue({ data: downloaded.map(id => ({ id })) })
+        .mockResolvedValue(snapshot(running ? [activeModel] : [], downloaded))
     supervisor.refreshManagedEngineModels({ engine: 'vllm', running })
     const rows = () =>
         state
@@ -98,15 +109,12 @@ describe('local vLLM downloaded inventory', () => {
         }
     ])('$name', async ({ running, before, after }) => {
         const owner = await startOwner(running, before)
-        owner.call.mockResolvedValue({ data: after.map(id => ({ id })) })
+        owner.call.mockResolvedValue(snapshot(running ? [activeModel] : [], after))
 
         owner.publish(after)
 
         await vi.waitFor(() => expect(owner.call).toHaveBeenCalledOnce())
-        expect(owner.call).toHaveBeenCalledWith('broker', 'engine:action', {
-            engine: 'vllm',
-            action: 'list_models'
-        })
+        expect(owner.call).toHaveBeenCalledWith('broker', 'engine:models')
         await vi.waitFor(() =>
             expect(
                 owner.rows()?.models.map(model => ({ name: model.name, status: model.status }))
@@ -144,7 +152,7 @@ describe('local vLLM downloaded inventory', () => {
     it('clears a stopped owner cache when an unknown inventory becomes known empty', async () => {
         const owner = await startOwner(false, [downloadedModel])
         owner.publish(undefined)
-        owner.call.mockResolvedValue({ data: [] })
+        owner.call.mockResolvedValue(snapshot([], []))
 
         owner.publish([])
 
@@ -177,7 +185,7 @@ describe('local vLLM downloaded inventory', () => {
         const owner = await startOwner(false, [downloadedModel])
         owner.call
             .mockRejectedValueOnce(new Error('temporary list failure'))
-            .mockResolvedValue({ data: [] })
+            .mockResolvedValue(snapshot([], []))
 
         owner.publish([])
 
@@ -191,7 +199,7 @@ describe('local vLLM downloaded inventory', () => {
         const pendingDownload = new Promise<JsonValue>(resolve => {
             finishDownload = resolve
         })
-        owner.call.mockReturnValueOnce(pendingDownload).mockResolvedValue({ data: [] })
+        owner.call.mockReturnValueOnce(pendingDownload).mockResolvedValue(snapshot([], []))
 
         owner.publish([downloadedModel])
         owner.publish([])
@@ -199,7 +207,7 @@ describe('local vLLM downloaded inventory', () => {
         await vi.waitFor(() => expect(owner.call).toHaveBeenCalledTimes(2))
         await vi.waitFor(() => expect(owner.rows()?.models).toEqual([]))
         if (!finishDownload) throw new Error('Download response resolver was not initialized')
-        finishDownload({ data: [{ id: downloadedModel }] })
+        finishDownload(snapshot([], [downloadedModel]))
         await pendingDownload
         expect(owner.rows()?.models).toEqual([])
     })

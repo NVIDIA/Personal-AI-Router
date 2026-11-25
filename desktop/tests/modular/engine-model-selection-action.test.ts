@@ -12,7 +12,7 @@ import {
     type ReactNode
 } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
     ButtonProps,
     ModalHeadingProps,
@@ -22,6 +22,7 @@ import type {
 import NodeEnginesInline from '@/ui/components/NodeList/NodeEnginesInline'
 import { EngineModelSelectionModal } from '@/ui/components/ModelManager/EngineModelSelectionModal'
 import type { ModelHubModal } from '@/ui/components/ModelHub/ModelHubModal'
+import { EngineDisplayNames } from '@/shared/constants/engines'
 import type {
     EngineProcessStatus,
     EngineStatusData,
@@ -164,34 +165,35 @@ afterEach(async () => {
     useOverviewUiStore.setState({
         activeTab: 'overview',
         focusNodeId: null,
-        modelSelectionNodeId: null
+        modelSelection: null
     })
     useErrorsStore.setState({ errors: [] })
     Reflect.deleteProperty(window, 'pairApi')
     Reflect.deleteProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT')
 })
 
-async function reportStatus(processStatus: EngineProcessStatus) {
+/** Report one engine's state for the fixture node, keeping other engines' state. */
+async function reportStatus(processStatus: EngineProcessStatus, engineType: EngineType = 'vllm') {
     const status: EngineStatusData = {
-        engineType: 'vllm',
+        engineType,
         nodeId,
         processStatus,
         enginePort: 8001,
         proxyPort: 8000
     }
     await act(() => {
-        useEngineStatusStore.setState({
-            statusByNode: new Map([
-                [nodeId, new Map<EngineType, EngineStatusData>([['vllm', status]])]
-            ])
+        useEngineStatusStore.setState(state => {
+            const engines = new Map(state.statusByNode.get(nodeId))
+            engines.set(engineType, status)
+            return { statusByNode: new Map(state.statusByNode).set(nodeId, engines) }
         })
         // A service lifecycle report also supersedes the optimistic command.
         usePendingActionsStore.setState({ pending: new Map() })
     })
 }
 
-async function render(processStatus: EngineProcessStatus) {
-    await reportStatus(processStatus)
+async function render(processStatus: EngineProcessStatus, engineType: EngineType = 'vllm') {
+    await reportStatus(processStatus, engineType)
     await act(() => root.render(createElement(SelectionTestApp)))
 }
 
@@ -199,15 +201,16 @@ async function render(processStatus: EngineProcessStatus) {
 // during a tab change. Keep those lifetimes separate in this focused fixture.
 function SelectionTestApp() {
     const activeTab = useOverviewUiStore(state => state.activeTab)
-    const selectionNodeId = useOverviewUiStore(state => state.modelSelectionNodeId)
+    const selection = useOverviewUiStore(state => state.modelSelection)
     return createElement(
         Fragment,
         null,
         activeTab === 'overview' ? createElement(NodeEnginesInline, { nodeId }) : null,
-        selectionNodeId
+        selection
             ? createElement(EngineModelSelectionModal, {
-                  key: selectionNodeId,
-                  nodeId: selectionNodeId
+                  key: `${selection.nodeId}:${selection.engineType}`,
+                  nodeId: selection.nodeId,
+                  engineType: selection.engineType
               })
             : null
     )
@@ -225,10 +228,11 @@ async function click(text: string) {
     await act(() => button(text).click())
 }
 
-async function turnOn() {
-    await render('stopped')
-    const control = host.querySelector<HTMLInputElement>('[aria-label="Start vLLM"]')
-    if (!control) throw new Error('Missing Start vLLM switch')
+async function turnOn(engineType: EngineType = 'vllm') {
+    await render('stopped', engineType)
+    const label = `Start ${EngineDisplayNames[engineType]}`
+    const control = host.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)
+    if (!control) throw new Error(`Missing ${label} switch`)
     await act(() => control.click())
 }
 
@@ -249,10 +253,19 @@ function cachedModel(name: string, downloaded = true): ModelItem {
     }
 }
 
-function reportModels(models: ModelItem[]) {
+function reportModels(models: ModelItem[], engineType: EngineType = 'vllm') {
     useEngineModelsStore.setState({
         models: new Map([
-            [`${nodeId}:vllm`, { engineType: 'vllm', nodeId, models, inventoryKnown: true }]
+            [
+                `${nodeId}:${engineType}`,
+                {
+                    engineType,
+                    nodeId,
+                    models,
+                    inventoryKnown: true,
+                    residencyKnown: true
+                }
+            ]
         ])
     })
 }
@@ -342,7 +355,7 @@ it('skips model selection when a saved selection starts normally', async () => {
     await reportStatus('running')
 
     expect(host.querySelector('[role="dialog"]')).toBeNull()
-    expect(useOverviewUiStore.getState().modelSelectionNodeId).toBeNull()
+    expect(useOverviewUiStore.getState().modelSelection).toBeNull()
     expect(commands.stop).not.toHaveBeenCalled()
 })
 
@@ -412,7 +425,7 @@ it('forgets selection after a failed start so later idle state cannot reopen it'
     await reportStatus('awaiting-model')
 
     expect(host.querySelector('[role="dialog"]')).toBeNull()
-    expect(useOverviewUiStore.getState().modelSelectionNodeId).toBeNull()
+    expect(useOverviewUiStore.getState().modelSelection).toBeNull()
     expect(commands.stop).not.toHaveBeenCalled()
 })
 
@@ -458,7 +471,7 @@ it('remembers a failed start while engine controls are unmounted so returning ca
 
     await act(() => useOverviewUiStore.getState().setActiveTab('overview'))
     await render('stopped')
-    expect(useOverviewUiStore.getState().modelSelectionNodeId).toBeNull()
+    expect(useOverviewUiStore.getState().modelSelection).toBeNull()
     await reportStatus('awaiting-model')
 
     expect(host.querySelector('[role="dialog"]')).toBeNull()
@@ -472,7 +485,7 @@ it('forgets a saved-model start while Overview is absent so Eject cannot reopen 
 
     await reportStatus('starting')
     await reportStatus('running')
-    expect(useOverviewUiStore.getState().modelSelectionNodeId).toBeNull()
+    expect(useOverviewUiStore.getState().modelSelection).toBeNull()
 
     await reportStatus('awaiting-model')
     await act(() => useOverviewUiStore.getState().setActiveTab('overview'))
@@ -480,4 +493,48 @@ it('forgets a saved-model start while Overview is absent so Eject cannot reopen 
     expect(host.querySelector('[aria-label="Stop vLLM"]')).not.toBeNull()
     expect(host.querySelector('[role="dialog"]')).toBeNull()
     expect(commands.stop).not.toHaveBeenCalled()
+})
+
+describe('MTPLX model selection', () => {
+    it('names MTPLX in the picker and loads the chosen pack on MTPLX', async () => {
+        const pack = 'mtplx-community/Qwen2.5-7B-Instruct-4bit'
+        reportModels([cachedModel(pack)], 'mtplx')
+        await turnOn('mtplx')
+
+        expect(commands.toggle).toHaveBeenCalledExactlyOnceWith('mtplx', nodeId)
+
+        await reportStatus('awaiting-model', 'mtplx')
+
+        expect(host.querySelector('h2')?.textContent).toBe('Choose a model for MTPLX')
+        expect(host.textContent).toContain('MTPLX needs a loaded model')
+        const load = host.querySelector<HTMLButtonElement>(`[aria-label="Load ${pack}"]`)
+        if (!load) throw new Error('The downloaded pack was not offered')
+
+        await act(() => load.click())
+
+        expect(commands.loadModel).toHaveBeenCalledExactlyOnceWith('mtplx', nodeId, pack)
+        expect(commands.stop).not.toHaveBeenCalled()
+    })
+
+    it('searches MTPLX own catalog and pulls the pack onto MTPLX', async () => {
+        await turnOn('mtplx')
+        await reportStatus('awaiting-model', 'mtplx')
+        await click('Add model')
+
+        expect(host.querySelector('[aria-label="Model catalog"]')).not.toBeNull()
+        await click('Download selected model')
+
+        expect(commands.pullModel).toHaveBeenCalledExactlyOnceWith('mtplx', nodeId, 'org/new-model')
+        expect(commands.stop).not.toHaveBeenCalled()
+    })
+
+    it('offers no picker for an engine that takes its model per request', async () => {
+        await turnOn('ollama')
+
+        expect(useOverviewUiStore.getState().modelSelection).toBeNull()
+
+        await reportStatus('awaiting-model', 'ollama')
+
+        expect(host.querySelector('[role="dialog"]')).toBeNull()
+    })
 })

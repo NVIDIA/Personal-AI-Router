@@ -5,7 +5,6 @@ import { useCallback, useMemo, useState } from 'react'
 import { Button, Flex, Stack, Switch, Text } from '@nvidia/foundations-react-core'
 import { Check, ContentCopy, ExpandMore, OpenInNew } from '@/ui/components/icons'
 import type { BackendInfo } from '@/ui/types/engine-info'
-import type { PlatformDisplayName } from '@/shared/types/platform'
 import { InstallButton } from './InstallButton'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
 import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
@@ -29,7 +28,6 @@ export function BackendHeader({
     onExpand,
     expanded,
     isLocalNode,
-    targetOs,
     onInstall
 }: {
     backend: BackendInfo
@@ -43,7 +41,6 @@ export function BackendHeader({
     onExpand: () => void
     expanded: boolean
     isLocalNode: boolean
-    targetOs: PlatformDisplayName
     onInstall: () => void
 }) {
     const caps = EngineCapabilities[backend.type]
@@ -279,7 +276,6 @@ export function BackendHeader({
             {!isUnavailable && !isTransitioning && backend.processStatus === 'not-installed' && (
                 <InstallButton
                     backend={backend}
-                    targetOs={targetOs}
                     isLocalNode={isLocalNode}
                     disabled={disabled}
                     onInstall={onInstall}

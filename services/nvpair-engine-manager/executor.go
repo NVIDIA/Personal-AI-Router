@@ -47,6 +47,18 @@ type EngineStatus struct {
 	AwaitingModel bool `json:"awaiting_model,omitempty"`
 	Healthy       bool `json:"healthy"`
 	Port          int  `json:"port,omitempty"`
+	// CanInstall reports that this machine has a way for NVPAIR to obtain the
+	// engine, for an engine that is not already here: the platform declares an
+	// install, anything it needs is present, and no copy of the engine sits in a
+	// folder the platform named as already having it. The engine card's Install
+	// button comes from this, so a card never offers an install this service
+	// would refuse. See installfacts.go.
+	CanInstall bool `json:"can_install,omitempty"`
+	// Owner names whose copy of the engine is here: "pair" for an NVPAIR-managed
+	// install, a package manager's name for its install, "other" for a copy that
+	// was merely found, and "" when nothing is. Uninstall is offered only for
+	// "pair", because it is refused for anything else. See installfacts.go.
+	Owner string `json:"owner,omitempty"`
 }
 
 // engineState is the per-engine runtime state.
@@ -78,9 +90,13 @@ type engineState struct {
 	healthy    bool
 	stopping   bool
 	// starting is true while a start launches the engine and waits for readiness.
-	awaitingModel  bool
-	starting       bool
-	adopted        bool  // started externally; we can't stop it
+	awaitingModel bool
+	starting      bool
+	adopted       bool // started externally; we can't stop it
+	// authBlocked records that this engine's port refused PAIR's health check
+	// for credentials, so the notice is raised and cleared on the transition
+	// rather than on every poll.
+	authBlocked    bool
 	gen            int64 // bumped each start; gates stale health loops
 	port           int
 	binPath        string
@@ -121,6 +137,12 @@ func (st *engineState) unlockOperation() {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	// identityAnswers are the identity probes the loaded manifests declare. They
+	// let a probe that asks no question of its own tell "nothing answered" from
+	// "somebody else's engine answered". Written once, when the registry is
+	// already complete, and read-only afterwards, so no lock guards it.
+	identityAnswers []identityAnswer
+
 	pullMu sync.Mutex
 	pulls  map[pullKey]*activePull
 	// downloads counts the downloads registered so far, so each has an ID of
@@ -202,8 +224,12 @@ type Executor struct {
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
 	return &Executor{
-		reg:                 reg,
-		reporter:            reporter,
+		reg:      reg,
+		reporter: reporter,
+		// The registry is loaded before an Executor is built, in every entry
+		// point, so what its manifests declare about their engines is settled
+		// here and fixed for the life of the process.
+		identityAnswers:     reg.declaredIdentityAnswers(),
 		emit:                emit,
 		client:              newEngineHTTPClient(engineResponseHeaderTimeout),
 		ollamaLoadClient:    newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
@@ -437,5 +463,11 @@ func pullFailedID(engine, model string) string {
 func startFailedID(engine string) string { return "engine-manager:start-failed:" + engine }
 
 func unhealthyID(engine string) string { return "engine-manager:unhealthy:" + engine }
+
+// authBlockedID names the standing notice that an engine's port refuses PAIR's
+// health checks for credentials. It is reported on the transition into that
+// state and cleared on the way out, because the error feed keeps one entry per
+// id and a re-report re-raises a dialog the user has already dismissed.
+func authBlockedID(engine string) string { return "engine-manager:auth-blocked:" + engine }
 
 func exitedID(engine string) string { return "engine-manager:exited:" + engine }

@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -39,6 +40,9 @@ var (
 	modelsMu sync.Mutex
 	models   = map[string]bool{"llama3.2:1b": true}
 	loaded   = map[string]bool{"llama3.2:1b": true}
+	// launchModel is what --model named, which for an engine that takes a directory
+	// rather than a name is a directory, not a pack. Only /health reports it.
+	launchModel string
 )
 
 func modelNames() []string {
@@ -72,6 +76,121 @@ func bstr(m map[string]any, k string) string {
 		return v
 	}
 	return ""
+}
+
+// recordInvocation appends one line to the file named by FAKE_RECORD_FILE, for a
+// test that has to see which calls ran and in what order. Only the two CLI shapes a
+// removal sequence uses are recorded — a pack listing and a removal — so the
+// transcript holds that sequence rather than this process's every startup. When
+// FAKE_RECORD_PORT names a port, each line says whether that port answered at the
+// instant of the call, which is the question a delete that stops the engine first
+// has to answer: was anything still serving the pack it was about to remove?
+func recordInvocation() {
+	path := os.Getenv("FAKE_RECORD_FILE")
+	if path == "" || len(os.Args) < 2 {
+		return
+	}
+	switch os.Args[1] {
+	case "models", "remove":
+	default:
+		return
+	}
+	recordLine(path, "cmd "+strings.Join(os.Args[1:], " "))
+}
+
+func recordLine(path, line string) {
+	if port := os.Getenv("FAKE_RECORD_PORT"); port != "" {
+		line += " port=" + portAnswerState(port)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake-engine record "+path+": "+err.Error())
+		return
+	}
+	defer file.Close()
+	fmt.Fprintln(file, line)
+}
+
+// portAnswerState dials a port the way a caller would, so the record says what was
+// true of that port at that moment rather than what the caller believed.
+func portAnswerState(port string) string {
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, 500*time.Millisecond)
+	if err != nil {
+		return "quiet"
+	}
+	_ = conn.Close()
+	return "answered"
+}
+
+// holdUntilSignaled stands in for the two ways an engine's port outlives the order
+// to stop it: this process closes its listener and takes a beat to exit, or a
+// process it started keeps answering on that port after it is gone. A removal that
+// means the pack to be gone when it returns has to wait out the first and refuse
+// the second, so a test chooses which one this engine does.
+func holdUntilSignaled(ln net.Listener, drain time.Duration, holderPIDFile string) {
+	go func() {
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGTERM, os.Interrupt)
+		defer signal.Stop(signals)
+		<-signals
+		if path := os.Getenv("FAKE_RECORD_FILE"); path != "" {
+			recordLine(path, "stop") // the order arrived; the listener is still up
+		}
+		port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+		if holderPIDFile != "" {
+			holder := exec.Command(os.Args[0], "holdport", port, holderPIDFile)
+			detachFromProcessGroup(holder)
+			if holder.Start() != nil {
+				os.Exit(1)
+			}
+			_ = ln.Close()
+			os.Exit(0)
+		}
+		_ = ln.Close() // the port stops answering here ...
+		time.Sleep(drain)
+		os.Exit(0) // ... and this process goes a beat later
+	}()
+}
+
+// mustDuration reads FAKE_TERM_DRAIN, where an empty value means no drain at all:
+// the helper, not this process, is what keeps the port answering.
+func mustDuration(raw string) time.Duration {
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Fatalf("invalid FAKE_TERM_DRAIN %q: %v", raw, err)
+	}
+	return d
+}
+
+// holdPort answers on 127.0.0.1:<port> and writes its PID to pidfile once it has the
+// port, so a test can stop it. It retries the bind because the listener it stands in
+// for closes at about the same moment, and it gives up on its own after a minute so a
+// test that forgets to stop it cannot wedge that port for the rest of the run.
+func holdPort(port, pidFile string) {
+	var ln net.Listener
+	var err error
+	for range 50 {
+		if ln, err = net.Listen("tcp", "127.0.0.1:"+port); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		os.Exit(1)
+	}
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		os.Exit(1)
+	}
+	go func() {
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	_ = http.Serve(ln, mux)
 }
 
 // reportDownloadProgress renders one `lms get` progress redraw at the
@@ -147,6 +266,7 @@ func downloadUntilInterrupted(interrupts int) {
 }
 
 func main() {
+	recordInvocation()
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
 		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST", "MODEL_ENDPOINT"} {
@@ -191,6 +311,7 @@ func main() {
 		if ok {
 			models = map[string]bool{served: true}
 			loaded = map[string]bool{served: true}
+			launchModel = served
 		}
 	}
 	// FAKE_SERVE_MODEL stands in for a server someone started on another model
@@ -270,6 +391,53 @@ func main() {
 		case "holdoutput": // the helper downloadleavesahelper starts
 			time.Sleep(time.Minute)
 			os.Exit(2)
+		case "models": // stand in for `mtplx models --json`: which packs the cache holds
+			// and in which directory each sits. /health below says which directory a
+			// running server mapped, and the two have to be joined to know which pack
+			// that is — hence a listing of its own, as the engine answers it.
+			fmt.Println(os.Getenv("FAKE_PACK_ROWS"))
+			return
+		case "remove": // stand in for `mtplx remove <cache id> --yes --json`: it does the
+			// removal and reports nothing. The line recordInvocation wrote on the way in
+			// — with whether the engine's port was answering then — is what a test reads.
+			return
+		case "holdport": // keep answering on a port the engine that opened it has given up
+			// args: holdport <port> <pidfile>
+			if len(os.Args) < 4 {
+				os.Exit(2)
+			}
+			holdPort(os.Args[2], os.Args[3])
+			return
+		case "listfrom": // stand in for `mtplx models --json` answering: print the
+			// listing held in the named file and exit. This is a cache listing run as
+			// a command rather than a request, with no shell between the two.
+			// args: listfrom <bodyfile>
+			if len(os.Args) < 3 {
+				os.Exit(2)
+			}
+			body, err := os.ReadFile(os.Args[2])
+			if err != nil {
+				os.Exit(2)
+			}
+			os.Stdout.Write(body)
+			return
+		case "listleavesahelper": // stand in for `mtplx models --json` printing its
+			// listing and exiting while a process it started keeps that output open.
+			// args: listleavesahelper <bodyfile> <pidfile>
+			if len(os.Args) < 4 {
+				os.Exit(2)
+			}
+			body, err := os.ReadFile(os.Args[2])
+			if err != nil {
+				os.Exit(2)
+			}
+			helper := exec.Command(os.Args[0], "holdoutput")
+			helper.Stdout, helper.Stderr = os.Stdout, os.Stderr
+			if helper.Start() != nil || os.WriteFile(os.Args[3], []byte(strconv.Itoa(helper.Process.Pid)), 0o644) != nil {
+				os.Exit(2)
+			}
+			os.Stdout.Write(body)
+			return
 		case "daemon", "server":
 			if strings.Join(os.Args[1:], " ") == "daemon status --json" {
 				if os.Getenv("PAIR_TEST_LMS_STATUS") == "command-error" {
@@ -421,6 +589,14 @@ func main() {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	// MTPLX answers /health with the directory it loaded its model from — for it the
+	// only spelling that says which cache the pack sits in — and PAIR joins that to the
+	// engine's own listing to work out which pack a running server holds. An engine
+	// launched by name has no directory to report, so it reports none.
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "model_path": launchModel})
+	})
 	// Ollama-shape model API (stateful).
 	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
 		ms := make([]map[string]string, 0)
@@ -570,6 +746,12 @@ func main() {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("fake-engine listen %s: %v", addr, err)
+	}
+	// FAKE_TERM_DRAIN is how long this process keeps running after its listener has
+	// gone; FAKE_TERM_HOLDER_PID hands the port to a helper that outlives the
+	// process. Each is a way a port can still answer after a stop looked done.
+	if drain, holderPID := os.Getenv("FAKE_TERM_DRAIN"), os.Getenv("FAKE_TERM_HOLDER_PID"); drain != "" || holderPID != "" {
+		holdUntilSignaled(ln, mustDuration(drain), holderPID)
 	}
 	fmt.Fprintf(os.Stderr, "fake-engine listening on %s\n", ln.Addr())
 	if err := http.Serve(ln, mux); err != nil {

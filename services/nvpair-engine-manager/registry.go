@@ -91,11 +91,20 @@ type Platform struct {
 	// InstallDir overrides the default app-data-root engine directory. It is a
 	// literal user path with the same ~ and OS environment expansion as detect
 	// paths; its resolved value is exposed to the manifest as {install_dir}.
-	InstallDir string     `json:"install_dir,omitempty"`
-	Detect     []string   `json:"detect,omitempty"`
-	Install    *Install   `json:"install,omitempty"`
-	Uninstall  *Uninstall `json:"uninstall,omitempty"`
-	Runtime    Runtime    `json:"runtime"`
+	InstallDir string   `json:"install_dir,omitempty"`
+	Detect     []string `json:"detect,omitempty"`
+	// Conflicts lists paths whose presence means the engine is already on this
+	// machine by a route PAIR does not own — the vendor's own application bundle,
+	// most often. A hit here does not make the engine read as installed, the way
+	// detect does: PAIR cannot start what it only found a folder of. It stops an
+	// install, because a second copy of an engine that shares one model library
+	// and one port is worse than no install at all, and a package manager would
+	// otherwise write it without being asked to. Paths get the same ~ and OS
+	// environment expansion as detect paths.
+	Conflicts []string   `json:"conflicts,omitempty"`
+	Install   *Install   `json:"install,omitempty"`
+	Uninstall *Uninstall `json:"uninstall,omitempty"`
+	Runtime   Runtime    `json:"runtime"`
 	// ModelsDir is the engine's on-disk model store, referenced elsewhere as
 	// {models_dir}. Nothing this service removes may delete it: Uninstall skips
 	// it, validation keeps it outside an explicit managed install directory, and
@@ -118,10 +127,29 @@ type Install struct {
 	// and logged as unpinned. Prefer fetch+run whenever the vendor publishes
 	// a script or artifact so remote content is downloaded before execution.
 	Script []string `json:"script,omitempty"`
+	// Pkg installs through a package manager the machine already has, which is
+	// how a vendor that ships no installer is still installable. It is
+	// exclusive with Script/Fetch/Artifacts/Run: the package manager does its
+	// own fetching, so there is nothing for PAIR to download or verify, and it
+	// chooses where its files go, so the install stays outside PAIR's ownership.
+	Pkg *PkgInstall `json:"pkg,omitempty"`
 	// Mode defaults to "user" (user-scoped, no elevation). "admin" is
 	// an explicit, rarely-used exception the runner surfaces loudly
 	// rather than silently escalating.
 	Mode string `json:"mode,omitempty"`
+}
+
+// PkgInstall names the package manager and the package to install through it.
+// Manager must be one of the managers this build can drive (see
+// packageManagerKinds); Formula is the package name, which a tap qualifies; Tap
+// is "<user>/<repository>" when the package does not come from the manager's own
+// repository. There is deliberately no version field: a package manager resolves
+// its own dependencies, so pinning one package name would still leave two Macs
+// building different things from the same manifest.
+type PkgInstall struct {
+	Manager string `json:"manager"`
+	Tap     string `json:"tap,omitempty"`
+	Formula string `json:"formula"`
 }
 
 // Uninstall removes a user-mode install. Run is for work only a command can do
@@ -207,6 +235,24 @@ type Runtime struct {
 	// Port is the configured service port; zero requests an available loopback
 	// port.
 	Port int `json:"port"`
+	// PortSource names a file where the engine keeps the port it really listens
+	// on, for engines whose own application lets the user pick one. PAIR probes
+	// that port beside its configured one, so an instance the user started
+	// themselves is found wherever their app happens to keep it instead of being
+	// mistaken for an empty port.
+	PortSource *PortSource `json:"port_source,omitempty"`
+	// ProbePorts lists loopback ports worth probing beside the configured one,
+	// because the engine's own software either looks there for a server that is
+	// already up or lands there when its preferred port is taken. The configured
+	// port is where a copy PAIR launches would go, which is not the same question
+	// as where an engine already running keeps itself.
+	ProbePorts []int `json:"probe_ports,omitempty"`
+	// ProbeRun bounds how far the search walks upward from a port that answers,
+	// counting the port it starts from. An engine that relocates when its port is
+	// taken takes the next bindable port, so a server pushed off the port it
+	// wanted leaves a run of listeners behind it, and the port it ended on is
+	// somewhere inside that run. Zero asks the declared ports alone.
+	ProbeRun int `json:"probe_run,omitempty"`
 	// Bind is the default listener address, used as the value of {host}.
 	// Empty defaults to loopback; a per-call bind can override it.
 	Bind string `json:"bind,omitempty"`
@@ -222,6 +268,16 @@ type Runtime struct {
 	Stop *StopSpec `json:"stop,omitempty"`
 	// Health is the periodic availability probe for a running engine.
 	Health *Probe `json:"health,omitempty"`
+}
+
+// PortSource points at an engine's own settings file for the port it listens
+// on. File is a path template with the same ~ and OS environment expansion as
+// detect paths; Field is a dotted object path into that JSON file and defaults
+// to "port". A file that is missing, unreadable, or holds no usable port simply
+// tells PAIR nothing, which is the ordinary case.
+type PortSource struct {
+	File  string `json:"file"`
+	Field string `json:"field,omitempty"`
 }
 
 // AutoLaunch configures start-time launch arguments. The only kind is
@@ -293,12 +349,66 @@ func (r *Runtime) hasCustomLaunch() bool {
 	return len(r.LaunchArgs) > 0 || len(r.LaunchEnv) > 0
 }
 
-// ProbeJSONMatch optionally identifies an HTTP service by a string field in
-// its JSON response body. Field supports the same validated dotted object path
-// syntax as action result filters.
+// ProbeJSONMatch optionally identifies an HTTP service by a field in its JSON
+// response body. Field supports the same validated dotted object path syntax as
+// action result filters.
+//
+// Value names the field's value the way the service writes it, not the way Go
+// would spell it: "router" is the string router, "true" the boolean true, "8" the
+// number 8. A field holding a string is compared after decoding, anything else by
+// the JSON text it holds. This exists because the engines that collide on /health
+// identify themselves with non-strings — MTPLX answers "ok": true — and a matcher
+// that could only compare strings left such an engine with no way to be recognised
+// as itself.
 type ProbeJSONMatch struct {
 	Field string `json:"field"`
 	Value string `json:"value"`
+}
+
+// identityAnswer is one manifest's claim about how its engine answers an identity
+// probe: this field holding this value means the service on that port is that
+// engine.
+type identityAnswer struct {
+	field string
+	value string
+}
+
+// declaredIdentityAnswers collects the identity claims of every loaded manifest,
+// read from each platform block's readiness and ongoing-health probes.
+//
+// A probe that declares no identity of its own consults this, which is how a port
+// answering somebody else's question stops being read as an answer to PAIR's. The
+// knowledge lives here rather than in the manifest that gets it wrong so that
+// declaring "MTPLX answers ok:true" is enough on its own: no engine has to name
+// the engines it might be confused with, and that list would have been out of date
+// the moment someone added another router.
+//
+// Every platform block is read, not only the host's. The question a probe asks is
+// about a port, and what answers there does not depend on which platforms the other
+// engine's manifest happens to describe.
+func (r *Registry) declaredIdentityAnswers() []identityAnswer {
+	var out []identityAnswer
+	add := func(p *Probe) {
+		if p == nil || p.JSONMatch == nil {
+			return
+		}
+		answer := identityAnswer{field: p.JSONMatch.Field, value: p.JSONMatch.Value}
+		if !slices.Contains(out, answer) {
+			out = append(out, answer)
+		}
+	}
+	for _, name := range r.Names() {
+		m, ok := r.Get(name)
+		if !ok {
+			continue
+		}
+		for _, key := range slices.Sorted(maps.Keys(m.Platforms)) {
+			platform := m.Platforms[key]
+			add(platform.Runtime.Ready)
+			add(platform.Runtime.Health)
+		}
+	}
+	return out
 }
 
 // Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP should be
@@ -369,6 +479,13 @@ type Action struct {
 	// only a restart makes the deletion visible to clients. A stopped engine is
 	// left stopped; a restart failure fails the action.
 	RestartAfter bool `json:"restart_after,omitempty"`
+	// StopBefore, for a manifest whose engine keeps the pack it serves inside a
+	// running process, makes the action stop that engine first and wait for its
+	// port to stop answering, unless the engine answers clearly that it is not
+	// serving what the action removes. It means "this action removes something the
+	// running engine may have mapped": what is removed is still whatever else the
+	// action declares. See Executor.stopBeforeAction.
+	StopBefore bool `json:"stop_before,omitempty"`
 }
 
 // ActionResult is the list-extraction spec on an Action (see Action.Result).
@@ -389,6 +506,12 @@ type ActionResult struct {
 	// model it loaded as "root" (its --model): peers and the proxy are told the
 	// id, and the loaded marker on the model list uses the root.
 	InventoryField string `json:"inventory_field,omitempty"`
+	// Residency, when set, declares how to join the answer this spec extracts
+	// onto the pack that answer sits in. Only loaded_models may declare it: the
+	// join starts from what is being served, and it is only worth making for an
+	// engine that serves one whole pack at a time, where "what is served" and
+	// "what is cached" are two different questions with two different answers.
+	Residency *ActionResidency `json:"residency,omitempty"`
 }
 
 // ResultMatch is the optional row filter on an ActionResult. Exactly one of
@@ -401,6 +524,44 @@ type ResultMatch struct {
 	Field    string   `json:"field"`              // element field to test, e.g. "state" / "loaded_instances"
 	In       []string `json:"in,omitempty"`       // accepted string values, e.g. ["loaded"]
 	Nonempty bool     `json:"nonempty,omitempty"` // true → Field must be a nonempty JSON array
+}
+
+// ActionResidency is the residency-declaration block inside an ActionResult (see
+// ActionResult.Residency, which a manifest writes as `result.residency`): where PAIR
+// reads the engine's pack inventory, where it reads what the engine is serving, and
+// which field carries the path in each.
+//
+// A loaded answer is only a name until something joins it to a place. MTPLX names
+// the model it serves "mtplx-flash-next-optimized-speed", keeps that pack in a
+// directory called Youssofal--Qwen3.8-Flash-Next-MTPLX-Optimized-Speed, and calls
+// the same thing Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed when it lists
+// the cache; the /health answer carries the directory under "model_path". With
+// those three names treated as one, a request for any model sharing a prefix reads
+// as the model being served, so the join is declared per engine and checked at
+// manifest load rather than guessed from a name at request time.
+type ActionResidency struct {
+	// Source names the action whose response carries the pack rows. For MTPLX
+	// that is list_models, which reads the cache directory and needs no running
+	// engine.
+	Source string `json:"source"`
+	// Read, when set, is where the loaded model's path is answered, for an engine
+	// that reports it separately from the name it serves. It is declared apart
+	// from the action's own HTTP call because the two are different questions:
+	// loaded_models asks what is served, this is where the answer says it lives.
+	// Left unset, there is no declared place to ask, and residentJoin answers
+	// unknown rather than going looking anyway.
+	Read *ActionHTTP `json:"read,omitempty"`
+	// PathField is the field in the read answer that names the loaded pack's
+	// directory, and RowPathField is the field on each inventory row that names
+	// the directory that pack sits in. The two are joined by exact string
+	// comparison (see packRowForKey), so both have to be named rather than
+	// inferred from whatever else the response happens to carry.
+	PathField    string `json:"path_field"`
+	RowPathField string `json:"row_path_field"`
+	// RowKeyField names the field on each inventory row that keys it, for an
+	// engine whose rows are not keyed on the inventory's own field. Empty means
+	// the source action's result.field is the key.
+	RowKeyField string `json:"row_key_field,omitempty"`
 }
 
 // ActionRemovePath deletes a filesystem path declared in the manifest.
@@ -433,11 +594,47 @@ type ActionHFPull struct {
 	Dir  string `json:"dir"`
 }
 
-// ActionLaunchModel names the launch flag that selects the engine's model, such
-// as "--model". The action takes {"model": "<id>"}, writes it into the saved
-// launch settings and restarts a running engine on it.
+// ActionLaunchModel names the launch flags that select the engine's model, such as
+// "--model", and takes {"model": "<id>"}: it writes that value into the saved launch
+// settings and restarts a running engine on it.
+//
+// Flags are the flags PAIR writes, and the first is the one the engine loads its weights
+// from: it alone answers "which model is selected", because an engine launched without it
+// has nothing to load.
+//
+// ClearFlags names a flag the engine still takes that PAIR has stopped writing. It is not
+// simply left alone: a value sitting there is a name for whichever pack was selected when
+// it was last written, so it is removed at every change of model — the load that replaces
+// it and the eject that gives it back alike. A flag may not be in both lists, which would
+// ask PAIR to write a model into a flag and empty the same flag in one transaction.
+//
+// Resolve names a lookup run on the value before it is written, for an engine whose launch
+// does not take the name its caller uses. "pack-path" replaces the pack the caller named
+// with the directory that pack's own listing keeps it in, which needs a loaded_models
+// result.residency declaration to read those rows from. A value the lookup cannot place —
+// one the listing does not hold, or a listing PAIR could not read — is written as it was
+// given, because a launch argument a user wrote is theirs to keep and a failed lookup is
+// no licence to write a path.
 type ActionLaunchModel struct {
-	Flag string `json:"flag"`
+	Flags      []string `json:"flags"`
+	ClearFlags []string `json:"clear_flags,omitempty"`
+	Resolve    string   `json:"resolve,omitempty"`
+}
+
+// clearedFlags is every flag a site that takes the model away has to leave empty: the
+// ones the action writes, since the model is being taken out of them, and the ones it no
+// longer writes, since a leftover there is a model name still being handed to the engine.
+// Only a site that writes nothing takes this list — one that writes the model first would
+// undo its own write, because the write collapses each flag it manages to a single
+// occurrence. The sites that ask which model is selected read Flags alone: a flag this
+// engine no longer writes is the leftover of a selection, not one.
+func (a *ActionLaunchModel) clearedFlags() []string {
+	if len(a.ClearFlags) == 0 {
+		return a.Flags
+	}
+	flags := make([]string, 0, len(a.Flags)+len(a.ClearFlags))
+	flags = append(flags, a.Flags...)
+	return append(flags, a.ClearFlags...)
 }
 
 // ActionHTTP is a templated call against the engine's loopback base URL.
@@ -834,7 +1031,7 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	for key, p := range m.Platforms {
-		if p.Runtime.WaitForModel && (p.Runtime.modeOrDefault() != "process" || modelLaunchFlag(m) == "") {
+		if p.Runtime.WaitForModel && (p.Runtime.modeOrDefault() != "process" || len(modelLaunchFlags(m)) == 0) {
 			return fmt.Errorf("platform %q: wait_for_model requires process mode and a launch_model action", key)
 		}
 	}
@@ -861,12 +1058,52 @@ func (m *Manifest) Validate() error {
 					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.ready", name, key)
 				}
 			}
+			// A lookup is only as good as the rows it reads, and a manifest that says
+			// "resolve" without declaring where the engine's pack rows come from has
+			// asked for a lookup with nothing to look in. loaded_models result.residency
+			// is the declared place those rows are read from — the same listing the
+			// residency join reads, so a launch and an eject cannot end up disagreeing
+			// about which directories this engine's cache holds.
+			if a.LaunchModel.Resolve == launchModelResolvePackPath {
+				loaded, ok := m.Actions["loaded_models"]
+				if !ok || loaded.Result == nil || loaded.Result.Residency == nil {
+					return fmt.Errorf("action %q: launch_model.resolve %q requires a loaded_models result.residency to read the pack rows from", name, launchModelResolvePackPath)
+				}
+			}
 		}
 		if a.RestartAfter {
 			for key, p := range m.Platforms {
 				if p.Runtime.Ready == nil {
 					return fmt.Errorf("action %q: restart_after requires platform %q to declare runtime.ready (the restart is only observable once the engine is ready again)", name, key)
 				}
+			}
+		}
+		if a.Result != nil && a.Result.Residency != nil {
+			// Both halves of the join have to exist. A residency block naming an
+			// action this manifest does not declare, or one whose answer carries no
+			// declared field to read rows out of, reads as an engine with nothing
+			// cached — the exact wrong answer the block is here to prevent.
+			source, ok := m.Actions[a.Result.Residency.Source]
+			if !ok {
+				return fmt.Errorf("action %q: result.residency.source %q is not an action this manifest declares", name, a.Result.Residency.Source)
+			}
+			if source.Result == nil {
+				return fmt.Errorf("action %q: result.residency.source %q declares no result, so there are no pack rows to read from it", name, a.Result.Residency.Source)
+			}
+			// A residency source is read every time PAIR asks what an engine is
+			// serving, including while that engine is running, so it has to be
+			// something that only looks. stop_engine, restart_after and launch_model
+			// each take the engine down or re-tune it, and any of them on the source
+			// would make answering a question about a pack stop, restart or re-launch
+			// the engine that holds it. remove_path and stop_before are the same
+			// mistake in the other direction: one deletes the pack the lookup was
+			// only meant to find, and the other takes the engine down as its first
+			// step, on the operation lock the lookup is already holding and cannot
+			// take again. hf_cache.delete is refused by the older rule that reserves
+			// it for delete_model. Nothing bundled does any of these today; the rule
+			// is here so a manifest cannot add the path later.
+			if declared := residencySourceChange(source); declared != "" {
+				return fmt.Errorf("action %q: result.residency.source %q declares %s, and a residency lookup must only read", name, a.Result.Residency.Source, declared)
 			}
 		}
 	}
@@ -893,7 +1130,42 @@ func (m *Manifest) Validate() error {
 	if act, ok := m.Actions["loaded_models"]; ok && act.Result != nil && act.Result.InventoryField != "" && m.AdvertisedModels != advertisedModelsLoaded && m.AdvertisedModels != advertisedModelsAvailable {
 		return fmt.Errorf("action %q: result.inventory_field requires advertised_models %q", "loaded_models", advertisedModelsLoaded)
 	}
+	// stop_before is "this action removes what the running engine may have mapped",
+	// and the only way to know that is the residency join. A manifest that declares
+	// no join has no answer to ask for, so the stop would take down whatever engine
+	// happens to be up. result.residency is itself only valid on loaded_models.
+	for name, a := range m.Actions {
+		if !a.StopBefore {
+			continue
+		}
+		loaded := m.Actions["loaded_models"]
+		if loaded.Result == nil || loaded.Result.Residency == nil {
+			return fmt.Errorf("action %q: stop_before requires loaded_models to declare result.residency, so the pack the engine has mapped is known before it is stopped", name)
+		}
+	}
 	return m.validatePlaceholders()
+}
+
+// residencySourceChange names the first declaration on an action used as a
+// result.residency.source that would change the engine or its packs, or "" when the
+// action only looks. It is the residency fence in Manifest.Validate: see the comment
+// there for what each declaration would do.
+func residencySourceChange(source Action) string {
+	for _, declaration := range []struct {
+		set  bool
+		name string
+	}{
+		{source.StopEngine, "stop_engine"},
+		{source.RestartAfter, "restart_after"},
+		{source.StopBefore, "stop_before"},
+		{source.LaunchModel != nil, "launch_model"},
+		{source.RemovePath != nil, "remove_path"},
+	} {
+		if declaration.set {
+			return declaration.name
+		}
+	}
+	return ""
 }
 
 // advertisedModels values for Manifest.AdvertisedModels.
@@ -906,6 +1178,18 @@ const (
 func (p *Platform) validate(key string) error {
 	if source := p.Runtime.ModelSource; source != "" && source != "huggingface" && source != "modelscope" {
 		return fmt.Errorf("platform %q: invalid model_source", key)
+	}
+	for _, conflict := range p.Conflicts {
+		if strings.TrimSpace(conflict) == "" {
+			return fmt.Errorf("platform %q: conflicts lists a blank path", key)
+		}
+		// Listing a detect path twice means the author did not know detect already
+		// reads it, and a path that makes the engine read as installed can never
+		// be reached as a conflict: an install is not offered for an installed
+		// engine, so the entry would only ever look like it was doing something.
+		if slices.Contains(p.Detect, conflict) {
+			return fmt.Errorf("platform %q: conflicts lists %q, which detect already answers for", key, conflict)
+		}
 	}
 	if p.InstallDir != "" {
 		if strings.TrimSpace(p.InstallDir) == "" {
@@ -1003,7 +1287,36 @@ func (p *Platform) validate(key string) error {
 	default:
 		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\" or \"command\")", key, p.Runtime.Mode)
 	}
+	if ps := p.Runtime.PortSource; ps != nil {
+		// An engine's own port is only worth hunting for when there is a probe
+		// to aim at it: the port read from the settings file widens the set of
+		// targets the readiness probe is asked about.
+		if p.Runtime.Ready == nil {
+			return fmt.Errorf("platform %q: runtime.port_source requires runtime.ready, whose probes the extra port would widen", key)
+		}
+		// Each rule here catches a declaration that can never find a port, which
+		// would read as an engine that simply does not publish one.
+		if strings.TrimSpace(ps.File) == "" {
+			return fmt.Errorf("platform %q: runtime.port_source file is required when port_source is declared", key)
+		}
+		if err := validatePlaceholderStrings([]string{ps.File}, allowedPlaceholders); err != nil {
+			return fmt.Errorf("platform %q: %w", key, err)
+		}
+		if ps.Field != "" && !resultMatchFieldPathRe.MatchString(ps.Field) {
+			return fmt.Errorf("platform %q: runtime.port_source field %q is not a valid object path", key, ps.Field)
+		}
+	}
 	if p.Install != nil {
+		// Checked first so a package mode declared beside a download reports as
+		// the contradiction it is, not as a missing install.run.
+		if p.Install.Pkg != nil {
+			if err := validatePkgInstall(key, p.Install); err != nil {
+				return err
+			}
+			if p.Uninstall != nil {
+				return fmt.Errorf("platform %q: uninstall is not allowed with install.pkg — %s owns the files it installs, so PAIR neither removes them nor offers to", key, p.Install.Pkg.Manager)
+			}
+		}
 		hasArtifacts := len(p.Install.Artifacts) > 0
 		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || hasArtifacts || len(p.Install.Run) > 0) {
 			return fmt.Errorf("platform %q: install.script is mutually exclusive with fetch/artifacts/run (a script install cannot also be checksum-pinned)", key)
@@ -1149,6 +1462,12 @@ func (a *Action) validate(name string) error {
 	if a.StopEngine && name != "unload_model" {
 		return fmt.Errorf("action %q: stop_engine belongs to unload_model", name)
 	}
+	if a.StopBefore && a.RestartAfter {
+		return fmt.Errorf("action %q: stop_before and restart_after cannot both be declared: the action stops the engine itself, on the operation lock the restart would have to take again", name)
+	}
+	if a.StopBefore && a.StopEngine {
+		return fmt.Errorf("action %q: stop_before and stop_engine cannot both be declared: that action is the stop, so there would be no removal for a stop before it to protect", name)
+	}
 	if hasHFPull {
 		tool := a.HFPull.Tool
 		if name != pullModelAction || tool == "" || tool != filepath.Base(tool) || strings.TrimSpace(a.HFPull.Dir) == "" {
@@ -1156,9 +1475,38 @@ func (a *Action) validate(name string) error {
 		}
 	}
 	if hasLaunchModel {
-		flag := a.LaunchModel.Flag
-		if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
-			return fmt.Errorf("action %q: launch_model.flag %q must be a flag such as \"--model\"", name, flag)
+		flags := a.LaunchModel.Flags
+		if len(flags) == 0 {
+			return fmt.Errorf("action %q: launch_model.flags needs at least one flag such as \"--model\"", name)
+		}
+		seen := make(map[string]bool, len(flags))
+		for _, flag := range flags {
+			if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
+				return fmt.Errorf("action %q: launch_model.flags entry %q must be a flag such as \"--model\"", name, flag)
+			}
+			if seen[flag] {
+				return fmt.Errorf("action %q: launch_model.flags lists %q twice", name, flag)
+			}
+			seen[flag] = true
+		}
+		// A flag PAIR clears is one it hands to the engine with no model in it, so it is
+		// spelled the same way and has to stay out of the list it writes: a flag in both
+		// would be set and emptied by one transaction, in an order no manifest states.
+		cleared := make(map[string]bool, len(a.LaunchModel.ClearFlags))
+		for _, flag := range a.LaunchModel.ClearFlags {
+			if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
+				return fmt.Errorf("action %q: launch_model.clear_flags entry %q must be a flag such as \"--model-id\"", name, flag)
+			}
+			if seen[flag] {
+				return fmt.Errorf("action %q: launch_model.clear_flags lists %q, which launch_model.flags writes; a flag cannot be both", name, flag)
+			}
+			if cleared[flag] {
+				return fmt.Errorf("action %q: launch_model.clear_flags lists %q twice", name, flag)
+			}
+			cleared[flag] = true
+		}
+		if a.LaunchModel.Resolve != "" && a.LaunchModel.Resolve != launchModelResolvePackPath {
+			return fmt.Errorf("action %q: launch_model.resolve %q invalid (want %q)", name, a.LaunchModel.Resolve, launchModelResolvePackPath)
 		}
 	}
 	if hasHFCache && strings.TrimSpace(a.HFCache.Dir) == "" {
@@ -1217,6 +1565,11 @@ func (a *Action) validate(name string) error {
 			return fmt.Errorf("action %q: result.match requires exactly one of a non-empty in or nonempty=true", name)
 		}
 	}
+	if a.Result != nil && a.Result.Residency != nil {
+		if err := a.Result.Residency.validate(name); err != nil {
+			return err
+		}
+	}
 	if a.ModelResolution != "" {
 		switch a.ModelResolution {
 		case modelResolutionLMSGet:
@@ -1233,6 +1586,41 @@ func (a *Action) validate(name string) error {
 		default:
 			return fmt.Errorf("action %q: model_resolution %q invalid (want %q or %q)", name, a.ModelResolution, modelResolutionLMSGet, modelResolutionLMSDiskPath)
 		}
+	}
+	return nil
+}
+
+// validate checks a residency declaration that can be judged from the declaring
+// action alone: which action may carry one, and whether the three names the join
+// needs are actually there. Whether Source names an action this manifest declares,
+// and whether that action has rows to read, is checked by Manifest.Validate, where
+// both actions are visible.
+func (r *ActionResidency) validate(name string) error {
+	if name != "loaded_models" {
+		return fmt.Errorf("action %q: result.residency belongs to loaded_models, which is the action that answers what is being served", name)
+	}
+	if strings.TrimSpace(r.Source) == "" {
+		return fmt.Errorf("action %q: result.residency.source is required: it names the action whose answer carries the pack rows", name)
+	}
+	if r.Source == name {
+		return fmt.Errorf("action %q: result.residency.source must name another action: the one that says what is served has no rows to look a pack up in", name)
+	}
+	if r.Read != nil && (strings.TrimSpace(r.Read.Method) == "" || strings.TrimSpace(r.Read.Path) == "") {
+		return fmt.Errorf("action %q: result.residency.read must give both a method and a path", name)
+	}
+	for _, field := range []struct{ key, value string }{
+		{"path_field", r.PathField},
+		{"row_path_field", r.RowPathField},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("action %q: result.residency.%s is required, and must name a field rather than be guessed from the answer", name, field.key)
+		}
+		if !resultFieldNameRe.MatchString(field.value) {
+			return fmt.Errorf("action %q: result.residency.%s %q is not a valid field name", name, field.key, field.value)
+		}
+	}
+	if r.RowKeyField != "" && !resultFieldNameRe.MatchString(r.RowKeyField) {
+		return fmt.Errorf("action %q: result.residency.row_key_field %q is not a valid field name", name, r.RowKeyField)
 	}
 	return nil
 }

@@ -88,7 +88,7 @@
     },
     "load_model": {
       "description": "Serve a different model (params: {\"model\": \"<Hugging Face id>\"}). vLLM serves one model per process, so this saves the model into the launch arguments and restarts the engine on it; if the new model does not start, the previous one is restored.",
-      "launch_model": { "flag": "--model" }
+      "launch_model": { "flags": ["--model"] }
     },
     "unload_model": {
       "description": "Eject the model vLLM is serving (params: {\"model\": \"<id>\"}). This stops its serving process and frees its GPU memory while keeping the engine enabled. Load or an inference request for a cached model starts serving again.",

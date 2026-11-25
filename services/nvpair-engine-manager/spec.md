@@ -7,7 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 1. Purpose
 A declarative, config-driven control plane for **local inference engines**
-(currently Ollama, LM Studio, and llama.cpp). It owns an engine's entire
+(currently Ollama, LM Studio, llama.cpp, vLLM, and MTPLX, the last of those
+Apple Silicon only). It owns an engine's entire
 lifecycle *except serving inference* — locate, install, launch, stop, restart,
 health, and config-declared actions — so one uniform API manages any engine
 across OSes with no per-engine code. A third party drops in a JSON manifest and
@@ -90,7 +91,12 @@ loading is provided by the PAIR proxy endpoint.
   The normative operation and failure contract is
   [ENGINE_SETTINGS.md](../nvpair-ui-broker/ENGINE_SETTINGS.md); launch grammar is
   [LAUNCH_TEXT.md](LAUNCH_TEXT.md).
-- Detect installation; **user-mode** install (HTTPS download + checksum-verify-when-pinned + run) per OS/arch.
+- Detect installation; **user-mode** install per OS/arch, in one of three modes: a
+  fetch (HTTPS download + checksum-verify-when-pinned + run), a vendor `script`, or
+  a `pkg` install run through a package manager found in `/opt/homebrew` or
+  `/usr/local` (PATH is never consulted), which is then proved by running the
+  installed command. A `pkg` install writes no install marker and is never
+  uninstalled by this service: the package manager owns where the files live.
 - Lifecycle: start (with readiness probe), stop, restart, status, periodic health.
 - The bundled LM Studio stop policy reads `lms daemon status --json`: a headless
   host uses `lms daemon down` to release its daemon and loaded models; a GUI host
@@ -113,7 +119,18 @@ loading is provided by the PAIR proxy endpoint.
   `chat`, `unload_model`, and `delete_model` (`remove_path` with
   `lms-disk-path` resolution);
   llama.cpp declares list, loaded-list, pull, load, unload, and native cache
-  delete with exact model ids. `loaded_models` reports
+  delete with exact model ids. vLLM and MTPLX declare list, loaded-list, pull,
+  load, unload and delete as well, but serve **one model per process**: their
+  `load_model` is a `launch_model` action that rewrites the model in the launch
+  arguments and restarts the engine on it, and their `unload_model` is a
+  `stop_engine` action, because neither can release its model and keep serving.
+  MTPLX declares a `pkg` install (`youssofal/mtplx`, Apple Silicon macOS only) and a
+  `conflicts` path (`/Applications/MTPLX.app`), so it is installed through Homebrew
+  on a Mac with neither, and never beside one. vLLM and MTPLX both set
+  `wait_for_model`, so a start whose launch arguments name no model is refused and
+  the clients open the model picker first. Only vLLM also loads a cached model on
+   request: MTPLX advertises just the pack it serves, so a request naming another
+   cached pack is refused until it is loaded. `loaded_models` reports
   models currently resident in memory, name-extracted via the same declarative
   `result` spec with optional nested-path and row filters: Ollama uses
   `GET /api/ps`, LM Studio filters nonempty `loaded_instances` from
@@ -134,17 +151,21 @@ loading is provided by the PAIR proxy endpoint.
 - A normalized node-level model list (`engine:models`): the union of each
   engine's advertised `modelsByEngine`, name-extracted through its declarative
   action result, plus the resident `loadedByEngine` from `loaded_models`.
-  Engines using `advertised_models: "loaded"` advertise only served names.
-  Enabled vLLM uses `advertised_models: "available"` to advertise complete cached
-  models for request-triggered loading, subject to the custom alias restriction
-  above. Its `list_models` disk inventory is also reported as
-  `downloadedByEngine`, including while disabled; its `loadedByEngine` uses those
-  cached repository IDs to identify resident rows. `requestableByEngine` carries
-  loader capability independently of ON/OFF intent for the broker's local route
-  updates. A successful empty inventory retains an engine key with `[]`; a
-  missing, malformed or failed inventory omits the key. A watcher polls these
-  lists and pushes `engine:models-changed` after load, unload, idle eviction,
-  download or deletion changes them.
+  Engines using `advertised_models: "loaded"` (MTPLX, which serves one pack per
+  process) advertise only served names. Enabled vLLM uses
+  `advertised_models: "available"` to advertise complete cached models for
+  request-triggered loading, subject to the custom alias restriction above.
+  Their `list_models` disk inventory is also reported as `downloadedByEngine`,
+  including while stopped or disabled; `loadedByEngine` names a resident model
+  the way that inventory names it — MTPLX by the residency join, which matches
+  the directory its `/health` reports against that same listing, vLLM by the
+  cached repository id, not a
+  `--served-model-name` alias. `requestableByEngine` carries loader capability
+  independently of ON/OFF intent for the broker's local route updates. A
+  successful empty inventory retains an engine key with `[]`; a missing,
+  malformed or failed inventory omits the key. A watcher polls these lists and
+  pushes `engine:models-changed` after load, unload, idle eviction, download or
+  deletion changes them.
 - Expose all of the above over the `engine:*` JSON-RPC surface to whatever orchestrates the service, plus an optional plain-HTTP LAN endpoint (`--http-port`, `GET /v1/models`) that serves the model list to a peer's discovery daemon (the list moved off the size-limited mDNS TXT onto HTTP).
 
 **Out of scope**
@@ -155,7 +176,19 @@ loading is provided by the PAIR proxy endpoint.
 
 ## 3. Key Use Cases
 - **Install an engine, user-mode**: `engine:install {engine:"ollama"}` downloads the per-OS user-scoped package (Windows/Linux standalone archive extracted into a user dir; macOS app bundle — never an elevated `Setup.exe` or `curl | sh`), checksum-verifies, extracts, re-detects.
-- **Run lifecycle**: `engine:start` / `engine:stop` / `engine:restart` / `engine:status`, with readiness and health probes against the engine's loopback port.
+- **Install an engine through a package manager**: a platform whose `install` block
+  declares `pkg` fetches nothing. The service finds the manager in
+  `/opt/homebrew/bin` or `/usr/local/bin` (PATH is not consulted, because a
+  Finder-launched host may not have it and a `brew` found there may not fetch
+  prebuilt packages), runs the manager's own steps, then runs the command the
+  manager installed with `--version` and only calls the install done when that
+  answers. A machine with no package manager gets a refusal naming the manager and
+  its site, and `can_install` stays absent, so no client offers the button.
+- **Edge case — a `pkg` install is never a PAIR-owned install**: it writes no
+  install marker, `engine:uninstall` refuses it by name, and
+  `engine:uninstall-managed` skips it, because the files are the manager's and
+  sit beside a model store the user filled.
+- **Run lifecycle**: `engine:start` / `engine:stop` / `engine:restart` / `engine:status`, with readiness and health probes against the engine's loopback port — the configured port, plus the port the engine records for itself when the manifest declares `runtime.port_source`.
 - **Run a declared action**: `engine:action {engine, action, params}` → the manifest-declared HTTP call to the engine's loopback control API (e.g. `127.0.0.1:{port}/api/pull`). (Methods, notifications, and UI events all use the colon form `engine:*`, matching the POC UI and the `errors:*` notifications.)
 - **Onboard a new engine (no code)**: a vendor adds `engines/<vendor>.json`; the generic runner exposes their lifecycle + actions immediately.
 - **Edge case — already installed**: detect short-circuits install (idempotent).
@@ -252,7 +285,7 @@ implementation is used.
 
 ## 6. Inputs and Outputs
 
-**Inputs** — from the orchestrator (`nvpair-ui-broker`) over stdio / `--ipc`, plus engine manifests from disk. Newline-delimited JSON-RPC 2.0 `engine:*` requests; manifest JSON (`engine`, `display_name`, `manifest_version`, `platforms{<os/arch>{detect, install, runtime}}`, `actions`). Every manifest is validated on load and rejected with a specific, human-readable error if malformed; manifests are read-only to this service.
+**Inputs** — from the orchestrator (`nvpair-ui-broker`) over stdio / `--ipc`, plus engine manifests from disk. Newline-delimited JSON-RPC 2.0 `engine:*` requests; manifest JSON (`engine`, `display_name`, `manifest_version`, `platforms{<os/arch>{detect, conflicts, install, runtime}}`, `actions`). Every manifest is validated on load and rejected with a specific, human-readable error if malformed; manifests are read-only to this service.
 
 `EngineStatus` object (returned by `engine:status` and `engine:get-installed`):
 ```json
@@ -265,8 +298,21 @@ implementation is used.
   awaiting_model?: boolean
   healthy: boolean
   port: number
+  can_install?: boolean
+  owner?: string
 }
 ```
+
+`can_install` is present only when it is true: an engine that is already here, or
+one this machine has no way to obtain (no `install` block, an admin install, a
+`pkg` install with no package manager on the machine, or a `conflicts` path that
+exists) simply omits it. `owner` is `"pair"` for an install this service made, a
+package manager's name (`"Homebrew"`) for one it ran through a manager, `"other"`
+for a copy it merely found, and omitted when nothing is installed. Both are
+recomputed from the filesystem on each status, and a client that hides an Install
+or Uninstall button on them is hiding exactly the buttons this service would
+refuse. A remote `engine:remote-start` / `:stop` answer is a full `EngineStatus`,
+so it restates both.
 
 `LogLine` object (entry in `engine:logs`):
 ```json
@@ -327,7 +373,7 @@ Requests (caller → service):
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
 | `engine:models` | — | `{ models: [string], modelsByEngine?, loadedByEngine?, downloadedByEngine? }` — advertised, loaded, and downloaded model lists |
-| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. Ollama, LM Studio, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`. vLLM offers open, text-generating safetensors repos from Hugging Face. Both llama.cpp and vLLM are `searchable`: a `query` searches llama.cpp's selected source for GGUF repos or Hugging Face for vLLM safetensors repos, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
+| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [CatalogModel], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**. Ollama, LM Studio, vLLM, and MTPLX have fixed sources; llama.cpp uses its selected source. Ollama's is compiled in (`catalog/ollama-models.json`, no network), LM Studio's is the `lmstudio-community` Hugging Face org fetched live and cached, and llama.cpp's Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched live and cached, offered as `repo:Q4_K_M`. vLLM offers open, text-generating safetensors repos from Hugging Face. Both llama.cpp and vLLM are `searchable`: a `query` searches llama.cpp's selected source for GGUF repos or Hugging Face for vLLM safetensors repos, each query cached on its own, and is echoed back; a query over 100 characters is an error rather than being shortened; other sources ignore it and return their whole list. `platform` and `arch` are the GOOS and GOARCH the models will be installed on; omitting both means this host, and naming a platform without an arch leaves the arch unknown rather than borrowing this host's. `appleOnly` rows (MLX) are kept only for a `darwin`/`arm64` target. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame — every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` from the remote node |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status }` after the remote install |
 | `engine:remote-pull-model` | `{ node, engine, model?, params?, opId? }` | `{ opId, result }` after the remote pull; `opId` is the caller's, or one minted for it (§14) |
@@ -419,7 +465,10 @@ fails it with the peer's error message.
 
   One persisted file: `installed-by-pair.json` in the engine's managed install
   directory (normally `engine-bin/<engine>` under app data, or the platform's
-  explicit `install_dir`), written after an install this service performed. It is the only record distinguishing an
+  explicit `install_dir`), written after an install this service performed, except
+  a `pkg` install, which deliberately writes none: a package manager put its files
+  in its own tree, where a removal list built from the manifest would take the
+  model store beside them. It is the only record distinguishing an
   install PAIR made from one the user made themselves, which an engine whose
   vendor script chooses its own destination cannot be told apart any other way,
   and it gates both `engine:uninstall` for such an engine and
@@ -444,6 +493,7 @@ fails it with the peer's error message.
 ## 12. Failure Modes and Mitigations
 - **Download / checksum failure on install**: engine stays NotInstalled. → Fail fast before `run`; `engine:install-progress` error + `errors:report` (`engine-manager:install-failed:<engine>`); never execute an unverified payload.
 - **Engine fails its readiness probe**: start never reaches Running. → Bounded ready timeout → back to Stopped; structured error; no half-started state.
+- **Port answers the readiness probe with 401 or 403**: it is the engine, configured to require an API key PAIR never sends. → Neither adopted nor spawned over; start fails at once naming the port, and the engine carries one `engine-manager:auth-blocked:<engine>` warning while the refusal holds, so it reads as blocked rather than silently offline.
 - **Engine process crashes**: engine unavailable. → A watcher flips state, emits `engine:state-changed` + `errors:report` (`engine-manager:exited:<engine>`); the parent's supervisor reports if the *manager itself* dies. (Automatic restart is planned — see §4 — not yet implemented.)
 - **A status check overlaps a stop or port change**: an old result could restore
   the previous state. → Ignore the result when engine state has changed since

@@ -1,6 +1,6 @@
 ---
 title: Engine Settings in NVIDIA PAIR
-description: Change the server port, proxy port, and launch arguments of an Ollama, LM Studio, or llama.cpp engine in NVIDIA PAIR.
+description: Change the server port, proxy port, and launch arguments of an Ollama, LM Studio, llama.cpp, vLLM, or MTPLX engine in NVIDIA PAIR.
 ---
 
 {/*
@@ -8,7 +8,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 */}
 
-Open a device's Ollama, LM Studio, llama.cpp, or vLLM row and expand **Settings**.
+Open a device's Ollama, LM Studio, llama.cpp, vLLM, or MTPLX row and expand **Settings**.
 Edit the server port, proxy port, and engine arguments, then select the green **Apply** button.
 A paired device that supports settings can be edited from another device in the
 cluster.
@@ -110,6 +110,7 @@ configuration consistent:
 | LM Studio | `--port`, `-p` | `--bind`, `LMS_SERVER_HOST` | `--cors` |
 | llama.cpp | `--port` | `--host` | `--cors-origins` |
 | vLLM | `--port` | `--host` | Not managed |
+| MTPLX | `--port` | `--host` | Not managed |
 
 For LM Studio, `--port 1235`, `--port=1235`, `-p 1235`, `-p1235`, and `-p=1235`
 all synchronize the same server-port field. Conflicting repetitions and invalid
@@ -149,6 +150,37 @@ Granite 4.2). For a model no vLLM parser can read, such as Nemotron Nano v2,
 tool calling stays off and vLLM answers a request that asks for tool calls with an
 error. To choose a parser yourself, add `--tool-call-parser <name>` to the
 launch text.
+
+MTPLX also serves one model per process, and only an Apple Silicon Mac has one.
+Its launch arguments name that model with `--model <pack directory>`: PAIR writes
+the directory the engine's own listing keeps the pack you chose in, which is the
+spelling MTPLX's app launches with, and choosing a different pack restarts
+`mtplx serve` on it. PAIR adds
+no sizing flags for MTPLX: there is no managed context length, memory share, or
+request limit, so the pack and the engine settle those. `--model` is replaced with
+the pack you load rather than duplicated, and a pack its listing does not hold is
+written as it was named, not guessed at. `--model-id` is no longer written, and one
+the launch
+text still carries from an older PAIR is removed whenever the model changes,
+because it names whichever pack was selected when it was last written. Any other
+argument is left alone. A launch that names no pack is
+refused, with a message to load a model, because MTPLX cannot pick one by itself.
+**Add model** lists the packs MTPLX publishes for its own decode path instead of
+searching Hugging Face, because only those packs run on it.
+
+MTPLX asks for an API key only where one is configured, and PAIR configures none,
+so a managed MTPLX is unauthenticated on loopback like the other OpenAI-compatible
+endpoints. If you add `--api-key` to the launch text or run PAIR with
+`MTPLX_API_KEY` set, the server demands that key and PAIR never supplies one. It
+refuses to start a second copy over your server, and while the key stays in place
+the engine is shown offline with a warning naming the refusing port. Remove the key,
+or choose a port nothing is listening on.
+
+A server you started yourself is found on the port it actually uses. PAIR asks both
+the port set in **Server port** and the port named in MTPLX's own settings file at
+`~/Library/Application Support/MTPLX/settings.json`, so an MTPLX.app server on a
+port of your choosing shows as online with nothing to configure in PAIR. That file
+only says where to look: a launch PAIR writes still uses **Server port**.
 
 Changing the server-port field updates the port in the command. Editing the
 command's port updates the numeric field. If both are edited before validation

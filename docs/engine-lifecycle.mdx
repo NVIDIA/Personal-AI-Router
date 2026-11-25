@@ -1,6 +1,6 @@
 ---
 title: Managing Engines in NVIDIA PAIR
-description: Install, start, stop, update, and remove the Ollama, LM Studio, and llama.cpp engines that NVIDIA PAIR uses to run models.
+description: Install, start, stop, update, and remove the Ollama, LM Studio, llama.cpp, vLLM, and MTPLX engines that NVIDIA PAIR uses to run models.
 ---
 
 {/*
@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 */}
 
 An **engine** is the local inference runtime NVIDIA PAIR uses to
-run models. Today that means Ollama, LM Studio, llama.cpp, or vLLM on a given machine.
+run models. Today that means Ollama, LM Studio, llama.cpp, vLLM or MTPLX on a given machine.
 PAIR can install and run those engines for you, or work with a supported
 existing Ollama or LM Studio installation. This page explains what you can
 expect when you install, start, stop, or remove an engine, and how to move one
@@ -146,6 +146,53 @@ When you install an engine, consider the following:
   does not unload automatically after inactivity. Use **Eject** to release its
   memory.
 
+- MTPLX runs on Apple Silicon Macs only, and nowhere else: an Intel Mac, a
+  Linux machine, or a Windows machine never shows an MTPLX card. Where a
+  `mtplx` command is already found at a known location, PAIR drives it: it
+  starts and stops `mtplx serve`, lists the packs already in `~/.mtplx/models`,
+  and downloads or deletes packs with `mtplx pull` and `mtplx remove`. Where
+  none is found and the Mac has Homebrew, **Install** installs it through
+  Homebrew: PAIR adds the `youssofal/mtplx` tap, trusts the formula, and runs
+  `brew install youssofal/mtplx/mtplx`, then runs the command that Homebrew
+  installed to check that MTPLX actually answers before calling the install
+  done. That check is the point of the order: the Python runtime MTPLX runs on
+  is built as part of this, either by the formula's own install step or, if
+  that skipped it, by MTPLX's launcher inside the first start. Doing it during
+  the install, which allows half an hour, keeps a several-hundred megabyte
+  build out of a start, which only allows ten minutes, and a start is otherwise
+  where you would find out the engine does not work. Without Homebrew there is
+  nothing for PAIR to install with, so the local card offers **Download** in
+  place of **Install** and opens MTPLX's own download page. A remote card
+  offers neither: a download started here would land here, not on the machine
+  the card describes. Anywhere there is no way to obtain the engine, the card
+  shows nothing rather than a button whose only outcome is a refusal.
+  Installing MTPLX opens **Choose a model for MTPLX** first, because nothing
+  in the launch arguments names a pack until you pick one.
+
+  Because those files live in Homebrew's tree and not in a folder PAIR owns,
+  there is no **Uninstall** button for a Homebrew MTPLX — the card says
+  **Installed with Homebrew** instead, and removing it means
+  `brew uninstall youssofal/mtplx/mtplx`. A data reset leaves MTPLX and its
+  packs alone for the same reason, so first-run setup never offers it. Like
+  vLLM it serves one pack per process, so **Load** restarts the engine on the
+  pack you pick and **Eject** stops it. A bare **Start** refuses
+  with a message to load a model, because nothing in the launch arguments names
+  one. **Add model** browses the pack list MTPLX publishes rather than searching
+  Hugging Face, because the engine runs only packs rebuilt for its own decode
+  path, and that short list is filtered on your machine instead of searched. A
+  download or a delete says only that it is running, with no percentage.
+  MTPLX has no in-use guard, so **Delete** is blocked while a pack is being
+  served: eject it first, or you are deleting weights the running server still
+  has mapped. Only the pack being served is advertised to other nodes, so a request
+  naming a different cached pack is refused until you load it.
+
+  An MTPLX server you started yourself, from MTPLX.app for example, is used rather
+  than duplicated. PAIR finds it on the port that app chose, read from MTPLX's own
+  settings file, and shows the engine online without starting a second router over
+  it. A server started with an API key refuses PAIR's health check, so it stays
+  offline with a warning naming that port: start it without a key, or on a port
+  nothing is listening on, if you want PAIR to route it.
+
 PAIR-managed llama.cpp models sleep after five minutes without inference work.
 This releases model and KV-cache memory, and the next request wakes the model
 automatically. The llama.cpp worker remains running and can retain some GPU
@@ -194,22 +241,26 @@ PAIR does not currently offer to update an engine, because it does not yet detec
 newer engine versions. To move an NVPAIR-installed Ollama or LM Studio to the
 vendor's current release, uninstall it and install it again, which keeps your
 models as described below. llama.cpp installs the build pinned by your version of
-PAIR. Update an engine you installed yourself with its own installer.
+PAIR. Update a Homebrew MTPLX with `brew upgrade mtplx`. Update an engine you
+installed yourself with its own installer.
 
 **Uninstall** removes the NVPAIR-installed copy of an engine, and applies only to
 an engine PAIR installed. Use it when you no longer want PAIR to own that engine
-on the machine.
+on the machine. A MTPLX obtained through Homebrew is the one exception: PAIR ran
+the install, but the files are Homebrew's, so no card offers **Uninstall** for it
+and an explicit uninstall request is refused with the command that works. Removing
+that copy means `brew uninstall youssofal/mtplx/mtplx`, which also leaves
+`~/.mtplx/models` where it is.
 
 Uninstalling an engine does **not** remove its models. Downloaded model files stay
 on disk in the engine's own storage (`~/.ollama`, `~/.llamacpp`,
-`~/.cache/huggingface`, or `~/.lmstudio/models`), so uninstalling and
-reinstalling does not cost you
-re-downloading them. The same is true of removing PAIR itself, or of resetting
-its data. Both remove the engines PAIR installed as far as they can, and never
-your models. A reset stops and tells you if an engine cannot be removed, while
-uninstalling PAIR leaves that engine in place and finishes. To reclaim that
-space, use **Delete** on individual models, or remove the engine's storage
-directory yourself.
+`~/.cache/huggingface`, `~/.lmstudio/models`, or `~/.mtplx/models`), so uninstalling
+and reinstalling does not cost you re-downloading them. The same is true of removing
+PAIR itself, or of resetting its data. Both remove the engines PAIR installed as far
+as they can, and never your models. A reset stops and tells you if an engine cannot
+be removed, while uninstalling PAIR leaves that engine in place and finishes. To
+reclaim that space, use **Delete** on individual models, or remove the engine's
+storage directory yourself.
 
 PAIR keeps the model folder at the engine's default location. If you moved LM
 Studio's models folder somewhere else inside `~/.lmstudio`, removing an LM
@@ -231,6 +282,10 @@ controlled:
   the engine in its own application first if you want PAIR to manage it fully.
 - **LM Studio** publishes an official stop command, so PAIR can stop an adopted
   instance that way and restart it on the port you chose.
+- **MTPLX** has no stop command, so PAIR leaves an adopted server running: stop it
+  in MTPLX.app first, then start it again from PAIR to move it. A server that asks
+  for an API key is not adopted at all — its port refuses PAIR, so the engine stays
+  offline with a warning naming that port.
 
 Refer to [Engines and Ports](architecture.mdx#engines-and-ports) in the
 architecture guide.
@@ -326,7 +381,7 @@ uninstalls every model at once.
 
 Applications need a **running** engine plus an available model. Copy API URLs
 from **Endpoints** after an engine is running. Do not assume a fixed port such as
-`11434`, `1234`, or `8080`.
+`11434`, `1234`, `8080`, `8000`, or `8100`.
 
 ## Tips
 

@@ -74,15 +74,24 @@ func TestProbeHTTP_MatchesJSONIdentity(t *testing.T) {
 	test("malformed JSON", `{"service":`, false)
 }
 
+// What a probe does with a body it cannot finish reading used to be "assume it is
+// the engine asked about". That assumption is what reported a relocated MTPLX, whose
+// health answer is 51 KB, as a running vLLM, so an unreadable body now counts as
+// somebody else being there. The bound itself is unchanged and is still the point of
+// this test: PAIR stops at maxProbeJSONBytes and closes the body, so a 4 MiB answer
+// cannot park the health loop. TestProbeHTTP_RejectsOversizedJSONIdentityBody
+// covers a probe that declares an identity key; this one declares none.
 func TestProbeHTTP_BoundsBodyDrain(t *testing.T) {
 	body := &healthProbeBody{reader: strings.NewReader(strings.Repeat("x", 4<<20))}
 	ex := &Executor{client: &http.Client{Transport: healthProbeTransport(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusAccepted, Body: body, Header: make(http.Header)}, nil
 	})}}
 	probe := &Probe{HTTP: "http://127.0.0.1:{port}/", Status: http.StatusAccepted}
-	require.True(t, ex.probe(context.Background(), probe, 1), "body drain changed the configured HTTP status health result")
+	require.False(t, ex.probe(context.Background(), probe, 1), "a body PAIR could not read was taken as proof of the engine being probed")
 	require.NotEqual(t, 0, body.read, "body read")
-	require.LessOrEqual(t, body.read, 1<<20, "body read")
+	// One pass reads the body up to maxProbeJSONBytes, the drain then takes what
+	// it needs to try to reuse the connection, so the ceiling is both passes.
+	require.LessOrEqual(t, body.read, 2*maxProbeJSONBytes+1, "body read")
 	require.True(t, body.closed, "body read")
 }
 

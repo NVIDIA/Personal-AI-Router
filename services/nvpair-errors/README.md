@@ -90,12 +90,19 @@ Two channels:
 
 ## ID namespace convention
 
-`<producer-shortname>:<error-class>[:<context>]`. Convention only —
+`<producer-shortname>:<error-class>[:<context>]`. `<context>` is the
+subject the error is about — a node, an engine, and for
+`pull-failed` also a `<model>`. Convention only —
 nvpair-errors keys by composite `(nodeId, id)` and
 **highest-timestamp-wins on upsert**. A later report with the same id
 but an OLDER timestamp is dropped.
 Equal-timestamp reports overwrite (a producer re-emitting a
 steady-state error refreshes the message).
+
+Because one id holds one entry, a producer that watches a condition
+reports it on the transition into that state and clears the id on the
+way out, rather than re-reporting per poll: a re-report re-raises a
+dialog the user has already dismissed.
 
 Starter ids:
 
@@ -108,6 +115,7 @@ Starter ids:
 | `engine-manager:install-failed:<engine>` | nvpair-engine-manager | installing the engine failed |
 | `engine-manager:pull-failed:<engine>:<model>` | nvpair-engine-manager | pulling a model for the engine failed |
 | `engine-manager:start-failed:<engine>` | nvpair-engine-manager | starting the engine failed |
+| `engine-manager:auth-blocked:<engine>` | nvpair-engine-manager | the engine's port refuses PAIR's health checks because it requires an API key; reported once while that holds |
 | `supervisor:subprocess-crashed:<subprocess-name>` | broker | any spawned subprocess exited unexpectedly |
 
 ## JSON-RPC methods (broker → nvpair-errors)

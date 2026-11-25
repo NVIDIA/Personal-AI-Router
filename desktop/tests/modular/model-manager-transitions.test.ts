@@ -140,6 +140,7 @@ function backend(
         port: 8001,
         proxyPort: 8000,
         modelsKnown: true,
+        residencyKnown: true,
         models: [
             {
                 name: 'org/cached-model',
@@ -380,5 +381,18 @@ describe('vLLM model controls', () => {
         expect(button('Delete').disabled).toBe(true)
         await click('Delete')
         expect(commands.deleteModel).not.toHaveBeenCalled()
+    })
+})
+
+describe('MTPLX model controls', () => {
+    it('warns that no pack is loaded without promising a request loads one', async () => {
+        await render('mtplx', 'awaiting-model')
+
+        const banner = host.querySelector('[role="status"]')
+        expect(banner?.textContent).toContain('No model loaded')
+        expect(banner?.textContent).toContain(
+            'Load a downloaded model from the list below, or add one.'
+        )
+        expect(banner?.textContent).not.toContain('Requests to the PAIR')
     })
 })

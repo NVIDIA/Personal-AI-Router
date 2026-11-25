@@ -99,16 +99,18 @@ func launchForState(st *engineState, port int, allowLanBind bool) (launchCommand
 	rt := st.plat.Runtime
 	bin := st.binPath
 	st.mu.Unlock()
-	return resolveSettingsLaunch(rt, bin, port, st.pathVars(), allowLanBind)
+	return resolveSettingsLaunch(rt, bin, observedEngineCLI(st), port, st.pathVars(), allowLanBind)
 }
 
 // resolveSettingsLaunch uses captured values so a status update cannot change
-// the executable halfway through assembling a settings response.
-func resolveSettingsLaunch(rt Runtime, bin string, port int, vars map[string]string, allowLanBind bool) (launchCommand, error) {
+// the executable halfway through assembling a settings response. The engine
+// command is the observed one rather than the manifest's literal, for the reason
+// engineCLI gives.
+func resolveSettingsLaunch(rt Runtime, bin, cli string, port int, vars map[string]string, allowLanBind bool) (launchCommand, error) {
 	vars["host"] = effectiveBind(rt.Bind, "")
 	vars["port"] = strconv.Itoa(port)
-	if rt.CLI != "" {
-		vars["cli"] = expandPath(rt.CLI)
+	if cli != "" {
+		vars["cli"] = cli
 	}
 	if rt.modeOrDefault() == "process" {
 		return resolveProcessLaunch(rt, bin, vars, allowLanBind)
@@ -128,7 +130,7 @@ func (e *Executor) launchStateLocked(engine string, st *engineState) settings.La
 	rt, bin := st.plat.Runtime, st.binPath
 	result := settings.LaunchState{Engine: engine, ServerPort: rt.Port, EffectivePort: st.port, Running: st.running, Adopted: st.adopted, Format: launchTextFormat}
 	st.mu.Unlock()
-	command, err := resolveSettingsLaunch(rt, bin, result.ServerPort, st.pathVars(), false)
+	command, err := resolveSettingsLaunch(rt, bin, observedEngineCLI(st), result.ServerPort, st.pathVars(), false)
 	if engine == "llamacpp" {
 		result.ModelSource = modelSource(st.plat.Runtime)
 	}
@@ -285,7 +287,9 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 	vars["host"] = host
 	vars["port"] = strconv.Itoa(request.Settings.ServerPort)
 	vars["bin"] = base.Bin
-	vars["cli"] = expandPath(rt.CLI)
+	if cli := observedEngineCLI(st); cli != "" {
+		vars["cli"] = cli
+	}
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		return fail("PAIR-managed launch settings require a loopback bind.")
 	}

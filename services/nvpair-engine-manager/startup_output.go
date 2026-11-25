@@ -113,6 +113,19 @@ type readyTimeoutError struct{ timeout time.Duration }
 
 func (e *readyTimeoutError) Error() string { return fmt.Sprintf("not ready after %s", e.timeout) }
 
+// readyBlockedError reports that the engine answered its own health endpoint
+// with a credential refusal. It is not a timeout: the engine is up and will
+// answer exactly this way forever, because PAIR never sends an API key.
+type readyBlockedError struct {
+	port   int
+	status int
+}
+
+func (e *readyBlockedError) Error() string {
+	return fmt.Sprintf("it answers its own health checks with HTTP %d because %s. %s Start it without an API key, or choose a port nothing is listening on",
+		e.status, credentialRefusalClause(e.status), neverSendsKey)
+}
+
 const (
 	readyTimeoutDetailLines = 12
 	readyTimeoutLineWidth   = 240
@@ -197,6 +210,12 @@ func (o *startupOutput) failure(ctx context.Context, err error) error {
 	var timedOut *readyTimeoutError
 	if errors.As(err, &timedOut) {
 		return fmt.Errorf("%w\n\nLast engine output:\n%s", err, recentLines(text, readyTimeoutDetailLines, readyTimeoutLineWidth))
+	}
+	// A credential refusal is already a complete explanation, and the tail of a
+	// log from an engine that is serving happily behind a key adds nothing.
+	var blocked *readyBlockedError
+	if errors.As(err, &blocked) {
+		return err
 	}
 	return fmt.Errorf("%w: %s", err, text)
 }

@@ -81,6 +81,8 @@ interface RemoteEngineFacts {
     awaitingModel: boolean
     healthy: boolean
     port: number
+    canInstall: boolean
+    owner: string
 }
 
 /**
@@ -98,6 +100,20 @@ function factsProcessStatus(facts: {
     if (facts.starting) return 'starting'
     if (facts.awaitingModel) return 'awaiting-model'
     return facts.installed ? 'stopped' : 'not-installed'
+}
+
+/**
+ * The two install facts an engine-manager `EngineStatus` carries, read the same way
+ * for a local engine and for a peer's: whether there is an install this node's
+ * service could perform, and who owns the copy that is already there. A node that
+ * reports neither — an older peer, or a status that came from discovery rather than
+ * from an engine manager — reads as nothing installable and nothing owned, which is
+ * the safe answer: PAIR's services refuse both operations in exactly the cases
+ * these facts describe, so a card built on a guess would offer buttons that can only
+ * end in a refusal.
+ */
+function readInstallFacts(status: JsonObject): { canInstall: boolean; owner: string } {
+    return { canInstall: booleanValue(status.can_install), owner: stringValue(status.owner) }
 }
 
 interface NodeHardware {
@@ -194,7 +210,8 @@ function emptyEngines(): Record<ProxyEngine, EnginePresence> {
         ollama: emptyPresence(),
         'lm-studio': emptyPresence(),
         'llama-cpp': emptyPresence(),
-        vllm: emptyPresence()
+        vllm: emptyPresence(),
+        mtplx: emptyPresence()
     }
 }
 
@@ -453,9 +470,24 @@ function pendingEngineOpIdleTimeoutMs(status: EngineProcessStatus): number {
  * The set of models a node reports loaded in memory for an engine, read from
  * `ModularNode.loadedByEngine` (enriched from the backend's per-engine
  * `loadedByEngine`), whose keys use the engine-manager's spelling.
+ *
+ * `null` is a third answer, not an empty set: the node never said what it holds.
+ * `nvpair-engine-manager` keeps those apart on purpose — `ModelsResult.LoadedByEngine`
+ * in `services/nvpair-engine-manager/models.go` reads "an engine key with an empty
+ * list means 'running, nothing loaded' while a MISSING key means 'not running / not
+ * queryable / no loaded endpoint'" — and the TUI's LOADED column shows the two as
+ * `"no"` and `"?"`, pinned by `TestUnreportedLoadState_IsUnknown` in
+ * `services/nvpair-tui/ui/nodedetail_test.go`. The desktop keeps the split for the
+ * same reason: a delete that would take the engine down with it treats `null` as
+ * "possibly resident". See `modelDeleteMode` in `@/ui/utils/model-delete`.
  */
-function loadedNamesForEngine(node: ModularNode | undefined, engineType: EngineType): Set<string> {
-    return new Set(node?.loadedByEngine[engineManagerName(engineType)] ?? [])
+function residencyForEngine(
+    node: ModularNode | undefined,
+    engineType: EngineType
+): Set<string> | null {
+    const key = engineManagerName(engineType)
+    if (!node || !(key in node.loadedByEngine)) return null
+    return new Set(node.loadedByEngine[key])
 }
 
 function sameStringList(left: string[], right: string[]): boolean {
@@ -954,7 +986,8 @@ class ModularBridgeState {
         ollama: 0,
         'lm-studio': 0,
         'llama-cpp': 0,
-        vllm: 0
+        vllm: 0,
+        mtplx: 0
     }
     private selfId: string | null = null
     /**
@@ -971,6 +1004,8 @@ class ModularBridgeState {
             starting: boolean
             awaitingModel: boolean
             port: number
+            canInstall: boolean
+            owner: string
         }
     >()
     /**
@@ -1166,15 +1201,16 @@ class ModularBridgeState {
             } else {
                 const cached = this.localManagerModels.get(engineType)
                 if (cached) {
-                    const loaded = loadedNamesForEngine(selfNode, engineType)
+                    const loaded = residencyForEngine(selfNode, engineType)
                     models.push({
                         engineType,
                         nodeId: selfId,
                         models: cached.map(item => ({
                             ...item,
-                            status: loaded.has(item.name) ? 'loaded' : 'idle'
+                            status: loaded?.has(item.name) ? 'loaded' : 'idle'
                         })),
-                        inventoryKnown: true
+                        inventoryKnown: true,
+                        residencyKnown: loaded !== null
                     })
                 }
             }
@@ -1398,7 +1434,8 @@ class ModularBridgeState {
             running: booleanValue(obj.running),
             starting: booleanValue(obj.starting),
             awaitingModel: booleanValue(obj.awaiting_model),
-            port: numberValue(obj.port)
+            port: numberValue(obj.port),
+            ...readInstallFacts(obj)
         })
         // A fresh authoritative state is the resolution of whatever op was in
         // flight (start/stop done, install `done`+installed, uninstall removed).
@@ -1760,7 +1797,11 @@ class ModularBridgeState {
                 // it for the engine port.
                 enginePort: facts.installed && facts.port > 0 ? facts.port : null,
                 // The peer's promoted proxy port, when its engine is advertised.
-                proxyPort: presence?.up && presence.port > 0 ? presence.port : null
+                proxyPort: presence?.up && presence.port > 0 ? presence.port : null,
+                // What the peer could do about the engine, from the peer: its own
+                // package manager, its own copy of an engine already in a folder.
+                canInstall: facts.canInstall,
+                owner: facts.owner
             }
         } else if (node && presence?.up && !node.clustered && !node.trusted) {
             // A live advertisement means the engine is reachable and serving, so
@@ -1809,7 +1850,8 @@ class ModularBridgeState {
                 starting: booleanValue(engineObj.starting),
                 awaitingModel: booleanValue(engineObj.awaiting_model),
                 healthy: booleanValue(engineObj.healthy),
-                port: numberValue(engineObj.port)
+                port: numberValue(engineObj.port),
+                ...readInstallFacts(engineObj)
             })
             seen.add(engineType)
         }
@@ -1842,7 +1884,10 @@ class ModularBridgeState {
             starting: booleanValue(obj.starting),
             awaitingModel: booleanValue(obj.awaiting_model),
             healthy: booleanValue(obj.healthy),
-            port: numberValue(obj.port)
+            port: numberValue(obj.port),
+            // A start/stop answer is a full `EngineStatus`, so it restates the
+            // install facts too; read them or the toggle would quietly drop them.
+            ...readInstallFacts(obj)
         })
         this.emitRemoteEngineStatus(nodeId, engineType)
     }
@@ -1882,23 +1927,53 @@ class ModularBridgeState {
 
     /**
      * Cache and push the local node's model list for a non-discovery engine.
-     * Called by the supervisor after a `list_models` pull (or with an empty list
-     * when the engine is stopped, since its HTTP `list_models` is unreachable).
+     * Called by the supervisor after a model read (or with an empty list when the
+     * engine is stopped, since its own list is unreachable then).
+     *
+     * `loadedNames` is the residency answer that read got: an array, including an
+     * empty one, is an answer and says what the engine holds; `null` means the
+     * read got no answer, which is not the same claim. With no answer this falls
+     * back to what the node last reported, because that is the only residency
+     * evidence there is — but it does not *make* an answer, so a node that never
+     * reported one pushes the patch with `residencyKnown: false`. A supplied set
+     * is written to the node as well: {@link discoveryModelsForNode} and
+     * {@link getEngineInitialState} re-stamp residency from the node, so a
+     * cache-only update would list the model being served as idle.
      */
-    setLocalEngineModels(engineType: EngineType, modelNames: string[]): void {
+    setLocalEngineModels(
+        engineType: EngineType,
+        modelNames: string[],
+        loadedNames: readonly string[] | null = null
+    ): void {
         const nodeId = this.selfId
-        // Stamp `'loaded'` from the self node's loaded set so a `list_models`
-        // refresh (pull/lifecycle) preserves residency instead of resetting every
-        // row to idle. The loaded set is seeded by discovery self-enrichment and
-        // kept fresh by {@link applyLocalModelSnapshot}.
-        const loaded = loadedNamesForEngine(nodeId ? this.nodes.get(nodeId) : undefined, engineType)
-        const items = modelNames.map(name => modelItem(name, loaded.has(name)))
+        const node = nodeId ? this.nodes.get(nodeId) : undefined
+        // Stamp `'loaded'` from the read's residency, falling back to the self
+        // node's loaded set so a refresh (pull/lifecycle) preserves residency
+        // instead of resetting every row to idle. That set is seeded by discovery
+        // self-enrichment and kept fresh by {@link applyLocalModelSnapshot}.
+        const loaded = loadedNames ? new Set(loadedNames) : residencyForEngine(node, engineType)
+        const items = modelNames.map(name => modelItem(name, loaded !== null && loaded.has(name)))
         this.localManagerModels.set(engineType, items)
         if (!nodeId) return
+        if (node && loadedNames) {
+            this.nodes.set(nodeId, {
+                ...node,
+                loadedByEngine: {
+                    ...node.loadedByEngine,
+                    [engineManagerName(engineType)]: [...loadedNames]
+                }
+            })
+        }
         emitBridgePush('engines:state-changed', {
             nodeId,
             engineType,
-            models: { engineType, nodeId, models: items, inventoryKnown: true }
+            models: {
+                engineType,
+                nodeId,
+                models: items,
+                inventoryKnown: true,
+                residencyKnown: loaded !== null
+            }
         })
     }
 
@@ -2033,12 +2108,13 @@ class ModularBridgeState {
     }
 
     private toEngineModels(node: ModularNode, engine: ProxyEngine): EngineModels {
-        const loaded = loadedNamesForEngine(node, engine)
+        const loaded = residencyForEngine(node, engine)
+        const managerName = engineManagerName(engine)
         return {
             engineType: engine,
             nodeId: node.id,
             models: this.modelsForEngine(node, engine).map(name =>
-                modelItem(name, loaded.has(name))
+                modelItem(name, loaded !== null && loaded.has(name))
             ),
             // An engine whose list is read from disk is listed while stopped, so
             // an empty list reads as "nothing downloaded". That is true only when
@@ -2046,7 +2122,11 @@ class ModularBridgeState {
             // whose list never arrived, is unknown.
             inventoryKnown:
                 !EnginesListingModelsWhenStopped.includes(engine) ||
-                engineManagerName(engine) in node.downloadedByEngine
+                managerName in node.downloadedByEngine,
+            // The same presence test, one key over: `loadedByEngine` is written
+            // from the same sweep and its missing key means the peer's residency
+            // was never read. See {@link residencyForEngine}.
+            residencyKnown: managerName in node.loadedByEngine
         }
     }
 
@@ -2076,15 +2156,19 @@ class ModularBridgeState {
                 // The cached list is the authoritative `list_models` set (names
                 // only); stamp `'loaded'` from the self node's discovery/push
                 // loaded set so the local card reflects in-memory residency too.
-                const loaded = loadedNamesForEngine(node, engine)
+                const loaded = residencyForEngine(node, engine)
                 return {
                     engineType: engine,
                     nodeId,
                     models: cached.map(item => ({
                         ...item,
-                        status: loaded.has(item.name) ? 'loaded' : 'idle'
+                        status: loaded?.has(item.name) ? 'loaded' : 'idle'
                     })),
-                    inventoryKnown: true
+                    inventoryKnown: true,
+                    // The cache says what is on disk, never what is in memory, so
+                    // residency is known only when some source actually reported
+                    // the engine's loaded set for this node.
+                    residencyKnown: loaded !== null
                 }
             }
         }
@@ -2143,7 +2227,12 @@ class ModularBridgeState {
                 // Each proxy-fronted engine has its own broker proxy
                 // (mapped in proxy-engines.ts); report that engine's bound
                 // proxy port. Loopback-only engines get null.
-                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
+                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null,
+                // The engine card's Install and Uninstall buttons come from these,
+                // so an engine this machine has no way to install — and a copy that
+                // belongs to somebody else's installer — show neither.
+                canInstall: facts.canInstall,
+                owner: facts.owner
             }
         }
 

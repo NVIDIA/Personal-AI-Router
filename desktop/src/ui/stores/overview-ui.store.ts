@@ -4,7 +4,14 @@
 import { create } from 'zustand'
 import type { SettingsWindowTab } from '@/ui/types/settings-window'
 import type { OverviewTab } from '@/shared/types/overview'
+import type { EngineType } from '@/shared/types/engines'
 import { useErrorsStore } from '@/ui/stores/errors.store'
+
+/** Which engine's model picker a setup interaction is waiting to offer. */
+interface ModelSelectionRequest {
+    nodeId: string
+    engineType: EngineType
+}
 
 interface OverviewUiStore {
     /** Which top-level Overview tab is showing the content area. */
@@ -13,8 +20,12 @@ interface OverviewUiStore {
     settingsSubTab: SettingsWindowTab
     /** One-shot request to expand a node card's inline engine settings. */
     focusNodeId: string | null
-    /** Turn-on/install interaction waiting to offer vLLM model selection. */
-    modelSelectionNodeId: string | null
+    /**
+     * Turn-on/install interaction waiting to offer model selection, for the engine
+     * the user acted on. One slot, not a list: a second setup interaction
+     * replaces the first, which is what the app does with two dialogs anyway.
+     */
+    modelSelection: ModelSelectionRequest | null
     /** Error identities at the start of setup, retained across tab navigation. */
     modelSelectionErrorBaseline: ReadonlyMap<string, number>
     setActiveTab: (tab: OverviewTab) => void
@@ -25,7 +36,7 @@ interface OverviewUiStore {
     focusNodeEngineSettings: (nodeId: string) => void
     /** Clear a pending focus request once a card has consumed it. */
     consumeFocusNode: () => void
-    requestModelSelection: (nodeId: string) => void
+    requestModelSelection: (nodeId: string, engineType: EngineType) => void
     dismissModelSelection: () => void
 }
 
@@ -33,7 +44,7 @@ export const useOverviewUiStore = create<OverviewUiStore>(set => ({
     activeTab: 'overview',
     settingsSubTab: 'cluster',
     focusNodeId: null,
-    modelSelectionNodeId: null,
+    modelSelection: null,
     modelSelectionErrorBaseline: new Map(),
 
     setActiveTab: tab => set({ activeTab: tab }),
@@ -50,13 +61,13 @@ export const useOverviewUiStore = create<OverviewUiStore>(set => ({
 
     consumeFocusNode: () => set({ focusNodeId: null }),
 
-    requestModelSelection: nodeId =>
+    requestModelSelection: (nodeId, engineType) =>
         set({
-            modelSelectionNodeId: nodeId,
+            modelSelection: { nodeId, engineType },
             modelSelectionErrorBaseline: new Map(
                 useErrorsStore.getState().errors.map(error => [error.id, error.timestamp])
             )
         }),
 
-    dismissModelSelection: () => set({ modelSelectionNodeId: null })
+    dismissModelSelection: () => set({ modelSelection: null })
 }))

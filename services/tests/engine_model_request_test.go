@@ -137,7 +137,7 @@ func cachedModelRequestConfig(t *testing.T, models []string, launchArgs ...strin
 			},
 		}},
 		"actions": map[string]any{
-			"load_model":    map[string]any{"launch_model": map[string]string{"flag": "--model"}},
+			"load_model":    map[string]any{"launch_model": map[string]any{"flags": []string{"--model"}}},
 			"unload_model":  map[string]any{"stop_engine": true},
 			"list_models":   map[string]any{"hf_cache": map[string]string{"dir": "{hf_hub_cache}"}, "result": map[string]string{"array": "data", "field": "id"}},
 			"loaded_models": map[string]any{"http": map[string]string{"method": "GET", "path": "/v1/models"}, "result": map[string]string{"array": "data", "field": "id", "inventory_field": "root"}},

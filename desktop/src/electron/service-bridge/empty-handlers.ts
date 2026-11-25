@@ -225,13 +225,16 @@ function stopLocalEngine(engine: string, engineType: EngineType): void {
 }
 
 /**
- * Dispatch a UI engine command to the local `nvpair-engine-manager`. Lifecycle and
- * model operations are **fire-and-forget**: the engine-manager runs each in its
- * own goroutine and reports progress (`engine:install-progress`), completion
- * (`engine:state-changed`), and failures (`errors:report`) through push events.
- * We must not await these RPCs — a download or model pull runs for minutes and
- * would trip the request timeout, fabricating a failure while the operation is
- * actually succeeding.
+ * Dispatch a UI engine command to the local `nvpair-engine-manager`. Nothing here
+ * awaits a reply on a short deadline: a download or model pull runs for minutes and
+ * a fabricated timeout would report a failure while the operation is succeeding.
+ * Those long operations announce themselves through push events
+ * (`engine:install-progress`, `engine:state-changed`) and are sent without
+ * observing the reply. A model load or eject is not one of them — the manager
+ * reports a refused or failed load/eject only in that request's own error reply,
+ * and leaves the model loaded when it fails, so no push clears the row either.
+ * Those two therefore observe their reply, which costs no timeout; see
+ * `ModularSupervisor.sendProcess`.
  */
 function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): void {
     const supervisor = getModularSupervisor()
@@ -338,15 +341,18 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // (`/api/generate`) with no prompt: Ollama loads the model into VRAM
             // and returns immediately (`done_reason: "load"`) without generating.
             // LM Studio and llama.cpp declare real `load_model` manifest actions.
-            // vLLM's `load_model` serves the model by restarting a running engine
-            // on it, or starting a stopped one, which takes minutes and can fail
-            // (the model may not fit), so like Ollama's its rejection is observed
-            // and attributed to the pending model row.
+            // vLLM's and MTPLX's `load_model` serve the model by restarting a
+            // running engine on it, or starting a stopped one, which takes minutes
+            // and can fail (the model may not fit), so like Ollama's its rejection
+            // is observed and attributed to the pending model row.
             // Ollama, LM Studio and llama.cpp require the engine running (HTTP/CLI
-            // action); enabled vLLM can load its first model before a server exists.
+            // action); enabled vLLM can load its first model before a server exists,
+            // and vLLM and MTPLX list their models from disk
+            // (`EnginesListingModelsWhenStopped`), so Load is offered while the
+            // engine is stopped. ModelRow.tsx applies the same rule.
             // See docs/services-parity.md#models.
             if (payload.model) {
-                if (payload.engineType === 'vllm') {
+                if (payload.engineType === 'vllm' || payload.engineType === 'mtplx') {
                     // The reply arrives once the new model is serving, or the
                     // previous one is restored. The renderer's pending Load shows
                     // the engine as starting while it restarts. A Stop or Eject
@@ -386,6 +392,12 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                         true
                     )
                 } else {
+                    // LM Studio runs `lms load` and llama.cpp answers `POST
+                    // /models/load`; a failed load comes back as this request's error
+                    // reply and nothing else reports it — the model never enters
+                    // memory, so no model list push arrives either. Observe the reply
+                    // (without a timeout, see sendProcess) and name the row the
+                    // failure belongs to.
                     supervisor.sendProcess(
                         'broker',
                         'engine:action',
@@ -394,7 +406,13 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                             action: 'load_model',
                             params: { model: payload.model }
                         },
-                        failAction('load model')
+                        failAction('load model', {
+                            nodeId: payload.nodeId,
+                            engineType: payload.engineType,
+                            operation: 'load',
+                            modelName: payload.model
+                        }),
+                        true
                     )
                 }
             }
@@ -405,6 +423,14 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                     payload.engineType === 'ollama'
                         ? { model: payload.model, keep_alive: 0 }
                         : { model: payload.model }
+                // Eject changes the engine, not just the row: MTPLX and vLLM declare
+                // it a `stop_engine` action and the rest run a CLI or HTTP call. Each
+                // way it fails reports itself only in this request's error reply — a
+                // refused eject (the engine says it serves another model), a stop that
+                // cannot touch a server PAIR did not start, `lms unload` exiting
+                // non-zero — and the engine keeps serving the model afterwards, so no
+                // push clears the row either. Observe the reply, and pass the node,
+                // engine and model the pending-actions store needs to attribute it.
                 supervisor.sendProcess(
                     'broker',
                     'engine:action',
@@ -413,7 +439,12 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                         action: 'unload_model',
                         params: unloadParams
                     },
-                    failAction('unload model')
+                    failAction('unload model', {
+                        nodeId: payload.nodeId,
+                        engineType: payload.engineType,
+                        modelName: payload.model
+                    }),
+                    true
                 )
             }
             break
@@ -452,7 +483,13 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
     const nodeId = payload.nodeId
 
     const refuseRemote = (detail: string): void => {
-        supervisor.reportError(detail, 'warning', `engine-cmd:remote:${payload.command}`)
+        // Name the peer the command was aimed at. The pending-actions store keys its
+        // optimistic entry by node and engine, and `reportError` would otherwise
+        // stamp this machine's id on a command that was never meant for this machine.
+        supervisor.reportError(detail, 'warning', `engine-cmd:remote:${payload.command}`, {
+            nodeId,
+            engineType: payload.engineType
+        })
     }
 
     switch (payload.command) {

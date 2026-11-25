@@ -558,7 +558,7 @@ func TestStart_ReportsARefusalAsAFailedStart(t *testing.T) {
 	test("an engine whose model is a launch argument, with no model selected", func(t *testing.T) *Executor {
 		e := settingsExecutor(t, false)
 		m, _ := e.reg.Get("fake")
-		m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flag: "--model"}}
+		m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flags: []string{"--model"}}}
 		require.NoError(t, m.Validate())
 		return e
 	}, "no model selected")

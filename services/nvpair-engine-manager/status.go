@@ -29,12 +29,21 @@ type statusProbeRun struct {
 }
 
 // presenceResult distinguishes a positively identified engine from an
-// occupied/indeterminate target. Callers that might spawn or install must fail
-// closed when Occupied is true: a listener that did not pass the identity probe
-// is not permission to overwrite it.
+// occupied/indeterminate target. Callers that delete files must fail closed when
+// Occupied is true: a listener that did not pass the identity probe is not
+// permission to overwrite it. Whether a port is in the way of a second copy is a
+// narrower question, and the observation answers it — see
+// portObservation.spawnBlocked.
 type presenceResult struct {
 	Identified bool
-	Occupied   bool
+	// Port is the candidate that answered as this engine. It is not the port the
+	// caller asked about whenever the engine keeps its own port in a settings
+	// file, which is why the answer carries it instead of assuming.
+	Port     int
+	Occupied bool
+	// obs is the round's observation, so a refusal can name the port and the
+	// answer that was found there rather than describing the configured one.
+	obs portObservation
 }
 
 // Detect updates and returns whether the engine is installed, based on
@@ -75,6 +84,24 @@ func detectPath(st *engineState) (bool, string) {
 		}
 	}
 	return installed, binPath
+}
+
+// conflictingEnginePath answers whether the engine is already on this machine by a
+// route PAIR does not own. It reads the manifest's conflict paths the way
+// detectPath reads its detect paths, and names the first that exists, so a refusal
+// can point at the folder the user would have to open instead of describing a
+// condition nobody can see.
+func conflictingEnginePath(st *engineState) string {
+	for _, p := range st.plat.Conflicts {
+		r, err := resolvePlaceholders(p, st.pathVars())
+		if err != nil {
+			continue // conflict path references something other than a known directory
+		}
+		if ep := expandPath(r); fileExists(ep) {
+			return ep
+		}
+	}
+	return ""
 }
 
 // Status refreshes installation and fixed-port presence when no lifecycle
@@ -215,7 +242,7 @@ func statusLocked(engine string, st *engineState, enabled bool) EngineStatus {
 	// Enabled model-selecting engines remain available for another Load or
 	// request after their serving process exits unexpectedly.
 	awaitingModel := st.awaitingModel || (enabled && st.plat != nil && st.plat.Runtime.WaitForModel)
-	return EngineStatus{
+	status := EngineStatus{
 		Engine:        engine,
 		DisplayName:   st.manifest.DisplayName,
 		Installed:     st.installed,
@@ -225,7 +252,10 @@ func statusLocked(engine string, st *engineState, enabled bool) EngineStatus {
 		AwaitingModel: st.installed && awaitingModel && !st.running && !st.starting && !st.modelSwitching,
 		Healthy:       st.healthy,
 		Port:          st.port,
+		Owner:         installOwner(st),
 	}
+	status.CanInstall = canInstallHere(st)
+	return status
 }
 
 // refreshPassiveStatus stages filesystem and network observations without an
@@ -258,19 +288,16 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 	pathInstalled, binPath := detectPath(st)
 	checkPresence := pathInstalled || mode == "process"
 	checkPresence = checkPresence && key.port != 0 && ready != nil && proc == nil && (!running || adopted)
-	var listener listenerProbeResult
-	var identified, refusedConfirmed bool
+	var obs portObservation
+	var refusedConfirmed bool
 	if checkPresence {
-		probeCtx, stopProbe := context.WithTimeout(ctx, presenceRefusalWindow)
-		listener = probeListener(probeCtx, ready, key.port)
-		stopProbe()
-		switch listener {
-		case listenerProbeRefused:
-			if running && adopted {
-				refusedConfirmed = e.waitUnavailableContext(ctx, ready, key.port, presenceRefusalWindow)
-			}
-		case listenerProbeReachable:
-			identified = e.probe(ctx, ready, key.port)
+		// Every candidate port is asked, not only the one being watched. An
+		// engine the user started themselves answers on whatever port their own
+		// app chose, and that is the only place it will ever answer.
+		sweep := e.candidatePorts(st, key.port)
+		obs = e.probePortObservation(ctx, ready, sweep)
+		if obs.quiet && running && adopted {
+			refusedConfirmed = e.confirmPortsQuiet(ctx, ready, sweep, presenceRefusalWindow)
 		}
 	}
 	if ctx.Err() != nil {
@@ -294,7 +321,7 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 	}
 	if checkPresence {
 		switch {
-		case listener == listenerProbeRefused && refusedConfirmed:
+		case obs.quiet && refusedConfirmed:
 			emit = before.Running || before.Healthy || oldAdopted || before.Installed != pathInstalled
 			if st.healthStop != nil {
 				st.healthStop()
@@ -303,39 +330,56 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 			st.running = false
 			st.healthy = false
 			st.adopted = false
+			// An adopted service's port was never PAIR's to keep. Once it is
+			// gone, the next start goes back to the port PAIR configured for
+			// this engine instead of launching a duplicate on the stranger's.
+			st.port = st.plat.Runtime.Port
 			if !pathInstalled {
 				st.binPath = ""
 			}
-		case listener == listenerProbeRefused || listener == listenerProbeIndeterminate:
-			// A single refusal or an uncertain transport result cannot prove
-			// an adopted service stopped.
+		case !obs.occupied():
+			// A single unconfirmed round, or an uncertain transport result,
+			// cannot prove an adopted service stopped.
 			if running && adopted {
 				st.installed = true
 				if !pathInstalled {
 					st.binPath = ""
 				}
 			}
-		case identified && !st.stopping:
-			emit = !before.Running || !before.Healthy || !oldAdopted || before.Port != key.port
+		case obs.identified != 0 && !st.stopping:
+			emit = !before.Running || !before.Healthy || !oldAdopted || before.Port != obs.identified
 			st.installed = true
 			st.running = true
 			st.healthy = true
 			st.adopted = true
-			st.port = key.port
+			st.port = obs.identified
 			if !pathInstalled {
 				st.binPath = ""
 			}
-		case !identified && listener == listenerProbeReachable && running && adopted:
-			emit = before.Healthy
-			// A live listener that no longer identifies as this engine is
-			// unhealthy, but its port must not be treated as free.
+		case obs.identified == 0 && running && adopted:
+			// The port holds something that is not this engine, or could not be
+			// read. Neither proves the adopted service stopped, so it keeps its
+			// installation; only a listener answering something else is called
+			// unhealthy, and its port must not be treated as free. A stop that
+			// is still in flight is not a health failure, and an engine that
+			// still identifies itself during that stop is not unhealthy either.
+			if obs.answered() {
+				emit = before.Healthy
+				st.healthy = false
+			}
 			st.installed = true
-			st.healthy = false
 			if !pathInstalled {
 				st.binPath = ""
 			}
 		}
 	}
+	// A port that answers PAIR's health check with a credential refusal is this
+	// engine, set up in a way PAIR cannot work with, and the state alone would
+	// read as "offline". Say so, but only for an engine the user turned on, and
+	// only while that is what the port does.
+	blocked := enabled && obs.blocked != 0
+	notice := blocked != st.authBlocked
+	st.authBlocked = blocked
 	after := statusLocked(engine, st, enabled)
 	if before != after || oldBinPath != st.binPath || oldAdopted != st.adopted {
 		st.revision++
@@ -344,14 +388,24 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 	if emit {
 		e.emitState(engine)
 	}
+	switch {
+	case blocked && notice:
+		e.reporter.report(serviceError{
+			ID: authBlockedID(engine), Message: obs.authBlockedNotice(st.manifest.DisplayName),
+			Severity: "warning", Action: "none", EngineType: engine,
+		})
+	case notice:
+		e.reporter.clear(authBlockedID(engine))
+	}
 }
 
 // reconcilePresence reconciles filesystem detection with a fixed-port engine
 // service. A successful engine-specific readiness probe is authoritative even
 // when the binary lives outside NVPAIR's managed paths. Conversely, readiness
 // failure is not proof of shutdown: an HTTP 503 still has a live listener.
-// An adopted service is only marked stopped after repeated explicit connection
-// refusals, preventing a transient failed readiness response from clearing it.
+// An adopted service is only marked stopped after every candidate port refuses
+// repeatedly, so a transient failed readiness response cannot clear it and a
+// service that moved to another port is not reported gone.
 //
 // allowWhileStopping is true only for an explicit Start. Passive status checks
 // must not undo a deliberate OFF by re-adopting a service behind st.stopping.
@@ -371,15 +425,20 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 	}
 
 	if port == 0 || ready == nil || proc != nil || (running && !adopted) {
-		return presenceResult{Identified: running, Occupied: running}
+		return presenceResult{
+			Identified: running,
+			Port:       port,
+			Occupied:   running,
+			obs:        portObservation{bind: port},
+		}
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, presenceRefusalWindow)
-	listener := probeListener(probeCtx, ready, port)
-	cancel()
-	if listener == listenerProbeRefused {
-		if !running || !adopted || !e.waitUnavailable(ready, port, presenceRefusalWindow) {
-			return presenceResult{}
+	sweep := e.candidatePorts(st, port)
+	obs := e.probePortObservation(ctx, ready, sweep)
+	identified := obs.identified
+	if obs.quiet {
+		if !running || !adopted || !e.confirmPortsQuiet(ctx, ready, sweep, presenceRefusalWindow) {
+			return presenceResult{obs: obs}
 		}
 		st.mu.Lock()
 		changed := st.running || st.healthy || st.adopted || st.installed != pathInstalled
@@ -392,6 +451,9 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 		st.healthy = false
 		st.adopted = false
 		st.proc = nil
+		// The stranger's port is not PAIR's to keep: a later start goes back to
+		// the port PAIR configured for this engine.
+		st.port = st.plat.Runtime.Port
 		if !pathInstalled {
 			// A service-only adoption has no managed image. Never leave a stale
 			// path that orphan reclamation could terminate.
@@ -401,29 +463,16 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 		if changed {
 			e.emitState(engine)
 		}
-		return presenceResult{}
+		return presenceResult{obs: obs}
 	}
-	if listener == listenerProbeIndeterminate {
-		// DNS/routing/resource failures cannot prove the port is free. Preserve
-		// existing state and prevent install/start from writing over it.
+	if identified == 0 {
 		if running && adopted {
 			st.mu.Lock()
-			st.installed = true
-			if !pathInstalled {
-				st.binPath = ""
-			}
-			st.mu.Unlock()
-		}
-		return presenceResult{Occupied: true}
-	}
-
-	identified := e.probe(ctx, ready, port)
-	if !identified {
-		if running && adopted {
-			st.mu.Lock()
-			changed := st.healthy
+			changed := obs.answered() && st.healthy
 			st.installed = true // previously identified external service
-			st.healthy = false
+			if obs.answered() {
+				st.healthy = false
+			}
 			if !pathInstalled {
 				st.binPath = ""
 			}
@@ -431,28 +480,29 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 			if changed {
 				e.emitState(engine)
 			}
-			return presenceResult{Occupied: true}
 		}
-		// A listener is present but did not identify as this engine. Do not
-		// adopt it, spawn over it, or download a second copy for this port.
-		return presenceResult{Occupied: true}
+		// A listener is present but did not identify as this engine, so it is
+		// never adopted. Whether it also stands in the way of a second copy is a
+		// narrower question, answered by spawnBlocked at the callers that would
+		// bring one up: only a port that copy needs counts against them.
+		return presenceResult{Occupied: true, obs: obs}
 	}
 
 	st.mu.Lock()
 	if st.stopping && !allowWhileStopping {
 		st.mu.Unlock()
-		return presenceResult{Identified: true, Occupied: true}
+		return presenceResult{Identified: true, Port: identified, Occupied: true, obs: obs}
 	}
 	// Detect resets installed=false on every path-miss. Do not treat that
 	// internal refresh as a state transition for an already-adopted service,
 	// or every status poll would emit a duplicate state-changed event.
-	changed := !st.running || !st.healthy || !st.adopted || st.port != port
+	changed := !st.running || !st.healthy || !st.adopted || st.port != identified
 	st.installed = true
 	st.running = true
 	st.awaitingModel = false
 	st.healthy = true
 	st.adopted = true
-	st.port = port
+	st.port = identified
 	if allowWhileStopping {
 		st.stopping = false
 	}
@@ -465,7 +515,7 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 	if changed {
 		e.emitState(engine)
 	}
-	return presenceResult{Identified: true, Occupied: true}
+	return presenceResult{Identified: true, Port: identified, Occupied: true, obs: obs}
 }
 
 func (e *Executor) emitState(engine string) {

@@ -18,7 +18,12 @@ export interface EngineHubConfig {
 export interface EngineCaps {
     hasExpiry: boolean
     hasEject: boolean
-    /** Platforms where PAIR can auto-install this engine. Empty = no auto-install. */
+    /**
+     * Platforms where the onboarding picker offers this engine, on the machine
+     * running the app. It is no longer what the engine card asks: there the
+     * owning node reports `EngineStatusData.canInstall`, which knows whether the
+     * tool an install runs through is on that machine. Empty = never offered.
+     */
     hasInstall: SupportedPlatform[]
     /** Whether the engine has its own server port (vs CLI-per-request). */
     hasEnginePort: boolean
@@ -41,6 +46,21 @@ export interface EngineCaps {
      */
     loadRestartsEngine?: boolean
     /**
+     * When true, the engine serves one model chosen when it is launched, so an
+     * enabled engine without one cannot serve anything and the model picker is
+     * offered as soon as it is installed or turned on. Mirrors the manifest's
+     * `wait_for_model`, which is what makes the engine manager report
+     * `awaiting_model` rather than starting a server with nothing to serve.
+     */
+    needsModelSelection?: boolean
+    /**
+     * When true, a request to PAIR's endpoint for this engine can load a
+     * downloaded model by itself, so the waiting banner may promise it. Only vLLM
+     * has that path: MTPLX needs an explicit Load, and it advertises only the pack
+     * it is serving, so a request for another is not routed to it at all.
+     */
+    loadsModelOnRequest?: boolean
+    /**
      * When true, the engine restarts as part of deleting a model, so Delete asks
      * for confirmation first. The engine manager owns the restart; this flag only
      * tells the UI that deleting has that side effect.
@@ -52,6 +72,16 @@ export interface EngineCaps {
      * model files go, so the backend refuses it and the UI does not offer it.
      */
     deleteBlockedWhileLoaded?: boolean
+    /**
+     * When true, deleting a model the engine could be holding quits the engine
+     * first and leaves it down, so Delete names that on the item and asks before
+     * firing. Mirrors the manifest's `stop_before`, which is what makes the engine
+     * manager stop and wait out the port — including when the engine cannot be
+     * asked what it holds. Declared instead of inferred from
+     * `loadRestartsEngine` because loading and deleting take the engine down for
+     * opposite reasons, and only one of them brings it back.
+     */
+    stopsEngineBeforeDelete?: boolean
     /**
      * If the engine has its own public model catalog (e.g. ollama.com), provide the
      * hub config here. Presence doubles as the truthy flag for the hub source selector.

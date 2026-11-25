@@ -22,7 +22,7 @@ func waitingModelExecutor(t *testing.T) *Executor {
 	e := settingsExecutor(t, false)
 	m, ok := e.reg.Get("fake")
 	require.True(t, ok)
-	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flag: "--model"}}
+	m.Actions["load_model"] = Action{LaunchModel: &ActionLaunchModel{Flags: []string{"--model"}}}
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
 	p.Runtime.WaitForModel = true

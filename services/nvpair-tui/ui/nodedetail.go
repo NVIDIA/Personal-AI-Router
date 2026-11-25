@@ -1897,8 +1897,8 @@ func (d *nodeDetail) uninstallEngine(engine *engineStatus) tea.Cmd {
 // the engine pane when it can download, else the only running engine. Most
 // engines download through their running server, so a stopped one is never
 // chosen silently. An engine that downloads without its server (vLLM, into the
-// Hugging Face cache) can be chosen stopped when it is highlighted, as the
-// desktop app allows.
+// Hugging Face cache, and MTPLX, into its own pack cache) can be chosen stopped
+// when it is highlighted, as the desktop app allows.
 func (d *nodeDetail) pullTargetEngine() string {
 	if e := d.selectedEngine(); e != nil && (e.Running || e.Installed && pullsWhileStopped[e.Engine]) {
 		return e.Engine

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,6 +32,15 @@ const (
 	engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
 	maxProbeJSONBytes         = 1 << 20
 )
+
+// probeReadTimeout is how long one read of an engine that may not be answering gets:
+// the identity probe, over HTTP or over a socket; the read of where a running engine
+// loaded its model from; and the residency join an eject guard asks for. They share a
+// bound because they are the same kind of question — put to a process PAIR does not own,
+// on the way to saying something true about it — and a caller that waited longer than
+// this for one of them would be waiting, not asking. Var, not const, so a case can watch
+// a caller give up on a read that never comes back without waiting out the real bound.
+var probeReadTimeout = 3 * time.Second
 
 type listenerProbeResult uint8
 
@@ -189,14 +199,18 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		if opts.RequireOwned {
 			return refuse(fmt.Errorf("cannot apply launch settings: another process already owns the server port"))
 		}
-		slog.Info("adopting already-running external engine", "engine", engine, "port", port)
+		// The engine answers on presence.Port, which is wherever it really is
+		// rather than the port PAIR asked about, so the health loop follows it.
+		slog.Info("adopting already-running external engine", "engine", engine, "port", presence.Port)
 		st.mu.Lock()
 		st.gen++
 		gen := st.gen
+		st.authBlocked = false
 		st.mu.Unlock()
 		e.reporter.clear(startFailedID(engine))
 		e.reporter.clear(exitedID(engine))
 		e.reporter.clear(unhealthyID(engine))
+		e.reporter.clear(authBlockedID(engine))
 		if rt.Health != nil {
 			hctx, cancel := context.WithCancel(context.Background())
 			st.mu.Lock()
@@ -205,12 +219,16 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 			}
 			st.healthStop = cancel
 			st.mu.Unlock()
-			go e.runHealth(hctx, st, engine, port, gen)
+			go e.runHealth(hctx, st, engine, presence.Port, gen)
 		}
 		return nil
 	}
-	if presence.Occupied && rt.modeOrDefault() == "process" {
-		return refuse(fmt.Errorf("cannot start engine %q on port %d: the port is occupied by a service that did not identify as %s", engine, port, st.manifest.DisplayName))
+	// Only what sits on the port a new copy would bind, or an engine that will
+	// not answer PAIR for credentials, keeps it from starting. A stranger on a
+	// port this engine merely searches is not in the way of a server bound
+	// somewhere else, and PAIR hands MTPLX the port to bind.
+	if presence.obs.spawnBlocked() && rt.modeOrDefault() == "process" {
+		return refuse(errors.New(presence.obs.startRefusal(engine, st.manifest.DisplayName)))
 	}
 	// Not reported: a client offers Install, not Start, for an engine that is
 	// not installed, and an engine removed outside PAIR would otherwise raise an
@@ -220,9 +238,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	}
 	// An engine whose model is a launch argument cannot start without one. vLLM
 	// would serve, and first download, a default model of its own instead.
-	if flag := modelLaunchFlag(st.manifest); flag != "" {
+	if flags := modelLaunchFlags(st.manifest); len(flags) > 0 {
 		tokens, err := parseLaunchText(e.launchStateLocked(engine, st).LaunchText)
-		if model, _ := launchFlagValue(tokens, flag); err == nil && model == "" {
+		if model := launchModelValue(tokens, flags); err == nil && model == "" {
 			if rt.WaitForModel {
 				st.mu.Lock()
 				st.awaitingModel = true
@@ -238,8 +256,8 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	vars := st.pathVars()
 	vars["host"] = effectiveBind(rt.Bind, opts.Bind)
 	vars["port"] = strconv.Itoa(port)
-	if rt.CLI != "" {
-		vars["cli"] = expandPath(rt.CLI)
+	if cli := observedEngineCLI(st); cli != "" {
+		vars["cli"] = cli
 	}
 
 	// Report the start while it runs, which for vLLM can be minutes of
@@ -266,12 +284,14 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.running = true
 	st.healthy = true
 	st.adopted = false
+	st.authBlocked = false
 	st.gen++
 	gen := st.gen
 	st.mu.Unlock()
 	e.reporter.clear(startFailedID(engine))
 	e.reporter.clear(exitedID(engine))
 	e.reporter.clear(unhealthyID(engine))
+	e.reporter.clear(authBlockedID(engine))
 	e.emitState(engine)
 
 	st.mu.Lock()
@@ -646,8 +666,8 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	}
 	vars := st.pathVars()
 	vars["port"] = strconv.Itoa(port)
-	if rt.CLI != "" {
-		vars["cli"] = expandPath(rt.CLI)
+	if cli := observedEngineCLI(st); cli != "" {
+		vars["cli"] = cli
 	}
 	argv, err := resolveArgs(sp.Cmd, vars)
 	if err != nil {
@@ -749,33 +769,10 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 // waitUnavailable confirms that an engine's listener is gone before reporting
 // it stopped. Readiness and reachability are deliberately separate here: a
 // live listener returning 503 is unhealthy, not stopped. A successful control
-// command is likewise not proof that its daemon actually exited.
+// command is likewise not proof that its daemon actually exited. The port a stop
+// was carried out against has no relocation to follow, so this asks that one port.
 func (e *Executor) waitUnavailable(p *Probe, port int, timeout time.Duration) bool {
-	return e.waitUnavailableContext(context.Background(), p, port, timeout)
-}
-
-func (e *Executor) waitUnavailableContext(parent context.Context, p *Probe, port int, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
-	misses := 0
-	for {
-		result := probeListener(ctx, p, port)
-		if result == listenerProbeRefused {
-			misses++
-			if misses == unavailableConfirmations {
-				return true
-			}
-		} else {
-			// A reachable listener, timeout, or malformed/indeterminate target
-			// cannot prove shutdown. Require a fresh consecutive sequence.
-			misses = 0
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+	return e.confirmPortsQuiet(context.Background(), p, singlePortSweep(port), timeout)
 }
 
 // probeListener reports whether the transport endpoint described by a
@@ -1066,7 +1063,9 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 }
 
 // waitReady polls the readiness probe until it passes or the manifest's
-// allowance, counted from began, runs out.
+// allowance, counted from began, runs out. A credential refusal ends the wait
+// at once: that answer does not change with time, so spending the remaining
+// window on it only delays telling the user.
 func (e *Executor) waitReady(ctx context.Context, p *Probe, port int, began time.Time) error {
 	if p == nil {
 		return nil
@@ -1077,8 +1076,12 @@ func (e *Executor) waitReady(ctx context.Context, p *Probe, port int, began time
 	}
 	deadline := began.Add(timeout)
 	for {
-		if e.probe(ctx, p, port) {
+		answer := e.probeIdentity(ctx, p, port)
+		switch {
+		case answer.outcome == probeIdentified:
 			return nil
+		case answer.blocked():
+			return &readyBlockedError{port: port, status: answer.status}
 		}
 		if time.Now().After(deadline) {
 			return &readyTimeoutError{timeout: timeout}
@@ -1091,68 +1094,263 @@ func (e *Executor) waitReady(ctx context.Context, p *Probe, port int, began time
 	}
 }
 
+// probeOutcome is what an identity probe learned, not merely whether PAIR was
+// satisfied. "Not this engine" splits in three, because a service that refuses
+// PAIR for credentials is this engine configured in a way PAIR cannot work with,
+// a service that answers another engine's identity question is somebody else's, and
+// a port PAIR could not read proves nothing — and the three need different advice.
+type probeOutcome uint8
+
+const (
+	// probeUnanswered covers the answers that say nothing about who is listening:
+	// nothing listening, a status the manifest did not expect, a body that names no
+	// engine either.
+	probeUnanswered probeOutcome = iota
+	// probeIdentified is the expected status and, where the manifest asks for
+	// one, a body that matches.
+	probeIdentified
+	// probeKeyProtected is HTTP 401: the service wants an API key. MTPLX answers
+	// every route but its dashboard bundle this way once one is configured.
+	probeKeyProtected
+	// probeRefusedAuth is HTTP 403: the service refuses requests that carry no
+	// credentials at all.
+	probeRefusedAuth
+	// probeOtherService is a listener that answered and, by what it answered, said
+	// it is not this engine: it replied to an identity question some other engine
+	// declares as its own, or its body was too large for PAIR to have read at all.
+	// Both mean somebody is listening who is not this engine, which is why they
+	// share an outcome. Whether that somebody stands in the way of a second copy is
+	// answered later, by portObservation, against the port a copy would need.
+	probeOtherService
+
+	// probePairFacade is HTTP 409 carrying PAIR's own `proxy-facade` error code:
+	// NVIDIA PAIR's compatibility personality answering that it is not an inference
+	// engine. The facade listens on every port it fronts, so it is the ordinary
+	// thing a search finds on loopback, and it is not somebody to leave alone. It
+	// is read as an empty port, which is why it is not filed with probeOtherService:
+	// a rule that called any 409 "somebody else is here" would let a web app that
+	// 409s /health block an install, and a rule that called it "this engine" would
+	// send a model name to a process that only forwards it. The 409 is only read
+	// this way because the request carries PAIR's probe marker; an unmarked request
+	// would have been forwarded to whatever engine is behind the facade.
+	probePairFacade
+)
+
+type probeResult struct {
+	outcome probeOutcome
+	status  int
+}
+
+// blocked says the port refused PAIR for credentials. Nothing is gained by
+// waiting for that to change.
+func (r probeResult) blocked() bool {
+	return r.outcome == probeKeyProtected || r.outcome == probeRefusedAuth
+}
+
+// probe is the yes/no form of the identity probe, for the health loop, where a
+// credential refusal simply means the engine is not answering PAIR.
 func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
+	return e.probeIdentity(ctx, p, port).outcome == probeIdentified
+}
+
+func (e *Executor) probeIdentity(ctx context.Context, p *Probe, port int) probeResult {
 	if p == nil {
-		return true
+		return probeResult{outcome: probeIdentified}
 	}
 	vars := map[string]string{"port": strconv.Itoa(port)}
 	if p.HTTP != "" {
 		u, err := resolvePlaceholders(p.HTTP, vars)
 		if err != nil {
-			return false
+			return probeResult{}
 		}
-		pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		pctx, cancel := context.WithTimeout(ctx, probeReadTimeout)
 		defer cancel()
 		req, err := http.NewRequestWithContext(pctx, http.MethodGet, u, nil)
 		if err != nil {
-			return false
+			return probeResult{}
 		}
 		req.Header.Set(engineIdentityProbeHeader, "1")
 		resp, err := e.client.Do(req)
 		if err != nil {
-			return false
+			return probeResult{}
 		}
 
 		want := p.Status
 		if want == 0 {
 			want = 200
 		}
-		statusMatches := resp.StatusCode == want
-		if p.JSONMatch == nil {
-			httpcon.DrainAndClose(resp.Body)
-			return statusMatches
+		if resp.StatusCode != want {
+			// readProbeBody drains and closes on every path here, so a refused
+			// answer still returns its connection to the pool.
+			body := readProbeBody(resp.Body)
+			outcome := probeUnanswered
+			switch resp.StatusCode {
+			case http.StatusUnauthorized:
+				outcome = probeKeyProtected
+			case http.StatusForbidden:
+				outcome = probeRefusedAuth
+			case http.StatusConflict:
+				// A 409 has to be read before it is filed, because two very
+				// different things answer it: NVIDIA PAIR's own compatibility
+				// facade, which is not an inference engine and has none behind it,
+				// and a web app that 409s a path it does not serve, which is
+				// somebody else's live service. Only the body tells them apart.
+				if isPairFacadeAnswer(body) {
+					outcome = probePairFacade
+				}
+			}
+			return probeResult{outcome: outcome, status: resp.StatusCode}
 		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeJSONBytes+1))
+		// What happens to the status code now decides the rest. The body is read
+		// for every probe, not only for one that asks for a key, because a status
+		// code is not evidence about which engine answered: on one Mac's loopback,
+		// vLLM answers /health with 200 and no body, llama.cpp with 200 and
+		// {"status":"ok"}, and MTPLX with 200 and {"ok":true,...}. A probe satisfied
+		// by any 200 reports all three as the engine it asked about, and PAIR then
+		// sends the wrong router a model name and gets confident wrong answers.
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxProbeJSONBytes+1))
 		httpcon.DrainAndClose(resp.Body)
-		if !statusMatches || err != nil || len(body) > maxProbeJSONBytes {
-			return false
+		if len(bytes.TrimSpace(body)) == 0 {
+			// Nothing arrived to identify with, and an empty answer is how one of
+			// these engines really behaves: vLLM's /health is a bare 200. A probe
+			// that asks no question of its own therefore still takes that as its
+			// engine, because the alternative is reporting a working vLLM offline.
+			// A probe that does ask for a key has nothing to compare, so it cannot
+			// claim to have found the engine.
+			return probeEmptyBodyResult(p)
+		}
+		if len(body) > maxProbeJSONBytes || readErr != nil {
+			// A body that never finished arriving, or was larger than PAIR reads,
+			// says nothing about who is listening, so it is never taken as proof of
+			// this engine. It is also not how any of these engines answer a health
+			// check, which is why the port is called somebody else's rather than
+			// empty: a truncated read must not become a reason to launch a second
+			// router onto a port that is already serving.
+			return probeResult{outcome: probeOtherService}
 		}
 		var obj map[string]json.RawMessage
 		if err := json.Unmarshal(body, &obj); err != nil {
-			return false
+			// A body that is not a JSON object answers no identity question. This
+			// is how a web app with history-api fallback replies to every path
+			// including /health, and believing such an answer is how a front-end
+			// dev server came to be reported as a running inference engine.
+			return probeResult{outcome: probeOtherService}
+		}
+		if p.JSONMatch == nil {
+			if e.bodyNamesAnotherEngine(obj) {
+				return probeResult{outcome: probeOtherService}
+			}
+			return probeResult{outcome: probeIdentified}
 		}
 		value, ok := resolveObjectPath(obj, p.JSONMatch.Field)
 		if !ok {
-			return false
+			return probeResult{outcome: probeUnanswered}
 		}
-		var actual string
-		return json.Unmarshal(value, &actual) == nil && actual == p.JSONMatch.Value
+		if jsonIdentityMatches(value, p.JSONMatch.Value) {
+			return probeResult{outcome: probeIdentified}
+		}
+		return probeResult{outcome: probeUnanswered}
 	}
 	if p.TCP != "" {
 		addr, err := resolvePlaceholders(p.TCP, vars)
 		if err != nil {
-			return false
+			return probeResult{}
 		}
-		pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		pctx, cancel := context.WithTimeout(ctx, probeReadTimeout)
 		defer cancel()
 		conn, err := (&net.Dialer{}).DialContext(pctx, "tcp", addr)
 		if err != nil {
-			return false
+			return probeResult{}
 		}
 		conn.Close()
-		return true
+		return probeResult{outcome: probeIdentified}
 	}
-	return true
+	return probeResult{outcome: probeIdentified}
+}
+
+// proxyFacadeCode is the error code NVIDIA PAIR's compatibility facade gives a
+// marked identity check, written by writeIngressError in nvpair-proxy/ingress.go.
+// It is the one code only PAIR writes, which is what makes it usable as evidence:
+// a status code alone cannot tell PAIR's own plumbing from a stranger.
+const proxyFacadeCode = "proxy-facade"
+
+// readProbeBody reads a bounded response body and closes it. The cap is the one
+// every probe answer is read under, because a body too large for PAIR to have read
+// is not an engine's health answer either way.
+func readProbeBody(body io.ReadCloser) string {
+	raw, err := io.ReadAll(io.LimitReader(body, maxProbeJSONBytes+1))
+	httpcon.DrainAndClose(body)
+	if err != nil || len(raw) > maxProbeJSONBytes {
+		return ""
+	}
+	return string(raw)
+}
+
+// isPairFacadeAnswer says a body carries PAIR's own facade code. It is keyed on that
+// code rather than on the 409 status alone because a status code is not evidence
+// about who answered: a blanket "any 409 is an empty port" would let a web app that
+// answers 409 for unknown paths pass as nobody being there, and PAIR would then
+// launch a second engine onto the port it occupies.
+func isPairFacadeAnswer(body string) bool {
+	var answer struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(body), &answer); err != nil {
+		return false
+	}
+	return answer.Code == proxyFacadeCode
+}
+
+// probeEmptyBodyResult answers a response that carried no body to identify with.
+// Where the manifest declares an identity key, an empty body cannot answer it.
+// Where it declares none, the manifest is asserting that a bare success is its
+// engine's behaviour, and for vLLM that assertion is true: its /health is a 200
+// with no body. The empty case therefore keeps the manifest's answer instead of
+// being lumped in with bodies that name somebody else.
+func probeEmptyBodyResult(p *Probe) probeResult {
+	if p.JSONMatch != nil {
+		return probeResult{outcome: probeUnanswered}
+	}
+	return probeResult{outcome: probeIdentified}
+}
+
+// bodyNamesAnotherEngine asks whether the answer a port gave belongs to some other
+// engine. It is asked only by a probe that declares no identity of its own, and it
+// is answered from the identity keys every loaded manifest declares, so knowing
+// that MTPLX reports "ok": true is enough on its own: no manifest has to list the
+// routers it might be confused with, and a router nobody has heard of still gets
+// caught as soon as its own manifest declares how it identifies itself.
+//
+// The asking probe never appears in this comparison as a claim against itself: the
+// index is consulted only by a probe that declares no identity key, and a probe that
+// declares one is answered by that key alone.
+func (e *Executor) bodyNamesAnotherEngine(obj map[string]json.RawMessage) bool {
+	for _, declared := range e.identityAnswers {
+		value, ok := resolveObjectPath(obj, declared.field)
+		if !ok {
+			continue
+		}
+		if jsonIdentityMatches(value, declared.value) {
+			return true
+		}
+	}
+	return false
+}
+
+// jsonIdentityMatches compares a probe key with the value the manifest expects.
+//
+// A key holding a string is decoded first, which is how llama.cpp's router marker
+// and every action result filter are written. Anything else is compared as the JSON
+// text it holds, which is how a manifest can name a boolean: MTPLX's health answer
+// identifies it with "ok": true, and a matcher limited to strings could not express
+// that, leaving MTPLX with no way to be recognised as itself and every engine
+// sharing /health indistinguishable from every other.
+func jsonIdentityMatches(value json.RawMessage, want string) bool {
+	var asString string
+	if err := json.Unmarshal(value, &asString); err == nil {
+		return asString == want
+	}
+	return string(value) == strings.TrimSpace(want)
 }
 
 func (e *Executor) reportStartFailed(engine string, err error) {

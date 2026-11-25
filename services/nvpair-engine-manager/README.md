@@ -6,10 +6,10 @@ SPDX-License-Identifier: Apache-2.0
 # nvpair-engine-manager
 
 A config-driven control plane for local inference engines. The bundled
-manifests support Ollama, LM Studio, llama.cpp, and vLLM. It manages everything about
-an engine **except serving inference**: detect, user-mode install,
-start/stop/restart, health, and config-declared actions. Adding an engine
-is a JSON manifest, not code.
+manifests support Ollama, LM Studio, llama.cpp, vLLM, and MTPLX — the last one on
+Apple Silicon only. It manages everything about an engine **except serving
+inference**: detect, user-mode install, start/stop/restart, health, and
+config-declared actions. Adding an engine is a JSON manifest, not code.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring.
@@ -286,7 +286,10 @@ The status has `installed:true`, `awaiting_model:true`, `running:false`, and
 `healthy:false`; no vLLM serving process or loaded model is advertised. The
 optional `awaiting_model` field is false or omitted in other lifecycle states.
 The desktop shows **Select a model**, keeps the switch on, and offers **Add model**
-and **Load** for downloaded models. A stopped engine hides its model controls.
+and **Load** for downloaded models. A stopped engine hides its model controls. The
+same flow covers any engine whose platform sets `wait_for_model` and declares a
+`launch_model` action — today vLLM and MTPLX — so MTPLX gets the same picker,
+titled **Choose a model for MTPLX**, and the same orange **No model loaded** banner.
 
 An explicit Load saves the chosen model and performs the normal readiness-probed
 start. Existing saved model arguments remain in effect, so upgrading preserves
@@ -295,6 +298,114 @@ preserves it, including waiting for a choice. A failed first Load restores the
 previous model-free enabled state. Eject retains its existing behavior of stopping
 vLLM and releasing its model memory. This change adds no inactivity unload policy.
 
+### MTPLX
+
+The `mtplx` manifest covers Apple Silicon macOS and nothing else: its `platforms`
+block declares only `darwin/arm64`, because MTPLX decodes on the Metal path. An
+engine manager on any other host therefore leaves MTPLX out of
+`engine:get-installed` rather than reporting it as available, and no client offers
+it there.
+
+Its `install` block is a `pkg` install, so on a Mac with no `mtplx` anywhere PAIR
+installs one: it finds `brew` in `/opt/homebrew/bin` or `/usr/local/bin` (PATH is
+never consulted), and runs `brew tap youssofal/mtplx`,
+`brew trust --formula youssofal/mtplx/mtplx` — tolerated, because a brew older than
+the trust gate has no such command and installs anyway — and
+`brew install youssofal/mtplx/mtplx`, with `HOMEBREW_NO_AUTO_UPDATE` and
+`HOMEBREW_NO_ENV_HINTS` set so the install spends its budget on this formula. Each
+command's output is kept and the tail of it reaches the failure message, because
+"Refusing to load formula … from untrusted tap" names the fix and "exit status 1"
+does not. Whatever brew reports, the install is only done once
+`/opt/homebrew/bin/mtplx --version` answers, run from the same bin directory. That
+check is not decoration: brew can exit 0 with MTPLX's Python runtime still unbuilt,
+because the launcher would build the venv inside the first launch, and paying for
+that inside a start — which has 600 seconds, not the install's 30 minutes, and shows
+a spinner instead of a progress line — is how an install that "succeeded" turns out
+to never work. With no brew on the machine the install is refused with a pointer to
+brew.sh, and `can_install` is reported false, so no card offers the button.
+
+`detect` checks `~/.mtplx/bin/mtplx`, the MTPLX app's own runtime venv,
+`/opt/homebrew/bin/mtplx` and `~/.local/bin/mtplx` in that order and the first one
+found is launched, and every `{cli}` action runs that same binary rather than the
+manifest's `cli` path — a Homebrew or app-venv `mtplx` found there is the one this
+machine has. `/Applications/MTPLX.app` is declared under `conflicts`, so a brew
+install is refused while the desktop app is installed, and the card shows no Install
+button: the two share `~/.mtplx/models`, and a second copy beside it is a second set
+of files in the user's model library that PAIR could not take back out.
+
+Either way there is nothing for `engine:uninstall` to remove. A `pkg` install
+records no PAIR ownership marker, and an explicit uninstall of a `pkg` platform is
+refused as "it was installed through Homebrew, which owns where it lives", naming
+`brew uninstall youssofal/mtplx/mtplx`; "reset all data" skips it for the same
+reason. The engine, and the pack cache the user filled, stay exactly where they
+were.
+
+`mtplx serve` runs in the foreground as one process, binding loopback `8101` while
+the proxy facade owns `8100`. Port `8000` is deliberately not reused for it: that
+is the vLLM facade's port, and MTPLX's own desktop GUI defaults to it, so a managed
+server would be fighting the user's own daemon for the listener. `stop` signals the
+process group `term` with fifteen seconds of grace, which takes the whole server
+down rather than only the launcher.
+
+MTPLX serves **one model pack per process** and has no load, unload, pull or delete
+API beyond its CLI, so the manifest provides them as manager actions, the way
+`vllm.json` does. It is also a `launch_model` engine: Load writes the pack into the
+saved launch arguments and restarts the server on it, restoring the previous pack if
+the new one does not come up, and Eject is a `stop_engine` action, because MTPLX
+cannot drop its model and keep running.
+
+`--model` is written with the directory the pack's own listing keeps it in, which
+is what MTPLX's own app launches with, and a pack handed over that way is loaded
+without the completeness checks a cache id goes through first. `--model-id` used
+to be written beside it, on the understanding that it fixed the id the server
+answers to. It does not: the server this machine's MTPLX app started carries no
+`--model-id` anywhere in its arguments and still answers as a name that comes out
+of the pack — `mtplx-flash-next-optimized-speed`, for a cache entry called
+`Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed`. The id routing keys on is
+the pack's cache id, which PAIR gets from the residency join — the directory
+`/health` reports, matched against that same listing — and not from a launch flag.
+So `launch_model` writes `--model` and declares `--model-id` in `clear_flags`: a
+value left in that flag names whichever pack was selected when it was last
+written, so it is removed at every change of model, on the load that replaces it
+and the eject that gives the model back alike, in the spaced and the `=` form
+alike. A launch argument PAIR does not manage is left exactly where it was.
+
+There is no default pack in the launch arguments, and an engine with a
+`launch_model` action will not start while none of the flags it writes names a
+model: the
+start is refused with "MTPLX has no model selected; load a model to start it"
+instead of bringing up a server with nothing to serve. A name left in a flag the
+action only clears is the leftover of a selection, not one, so it does not change
+that. Load is what picks the first
+pack.
+
+`list_models` is `mtplx models --json`, which reads the pack directory rather than
+asking a running server, so it answers offline and while MTPLX is down; the model
+list, Add model, Delete and Load all work against a stopped engine, and
+`advertised_models: "loaded"` still limits what peers and the proxy hear about to
+the pack being served. `loaded_models` asks the running server's `/v1/models`, and
+both the readiness check and the five-second health probe read `/health`.
+
+`pull_model` is `mtplx pull <hugging-face-id> --json` and needs no running engine;
+neither it nor `mtplx remove --yes --json` reports byte progress, so a pull shows
+only that it is pulling. MTPLX has no in-use guard, so `remove` will delete the pack
+a running server has mapped, and it does not take a deleted pack out of a stopped
+engine's launch arguments; the clients block Delete on the served pack instead. The
+pack cache is `~/.mtplx/models`, a flat `org--Name` layout that is not a Hugging
+Face hub cache, so the `hf_cache` actions do not apply. It is declared as the
+platform's `models_dir` and stays outside PAIR's app data, out of reach of anything
+this service removes, and no `--cache-dir` or `MTPLX_MODEL_DIR` override is passed:
+MTPLX reads that directory whether or not PAIR started it, and a flag naming one
+would defeat a store the user moved elsewhere.
+
+MTPLX loads only packs rebuilt for its own decode path, so its `engine:catalog`
+source is `https://mtplx.com/releases/models.json` — MTPLX publishes its runnable
+pack list there — rather than a Hugging Face search, which would offer mostly packs
+this engine refuses to load. Keys that are not a Hugging Face repo id are dropped,
+the entries come back sorted by repo id so a refresh does not reshuffle the list,
+and every one is marked `appleOnly` and served without `searchable`: the whole list
+is a couple of dozen entries, so clients filter it locally rather than fetching per
+keystroke, and a target that is not Apple Silicon is handed an empty list.
 
 ## Communication
 
@@ -326,8 +437,8 @@ Requests (caller → service):
 | `engine:cancel-pull` | `{ engine, model }` | `null`, once the transfer has stopped **and** its cleanup has settled — so a UI can hold "Canceling" until the backend is genuinely done. See "Cancelling a pull" below |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
-| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Ollama, LM Studio, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. vLLM serves Hugging Face repos by their repo id: its browse list is the open, text-generating safetensors repos of `Qwen`, `nvidia`, `mistralai`, `microsoft` and `ibm-granite` (both `text-generation` and `image-text-to-text`), with parameter count and size, and, like llama.cpp, a `query` searches all of Hugging Face under the same rules. llama.cpp downloads any GGUF repo as `repo:quantization`; its Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. Both llama.cpp and vLLM are `searchable`. llama.cpp queries use its selected Hugging Face or ModelScope source; vLLM queries use Hugging Face. Each query is cached separately (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
-| `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, downloadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. For an engine with `advertised_models: "loaded"`, `modelsByEngine` holds only the served model's name, which is what a request may be routed to, and `downloadedByEngine` holds its `list_models` inventory, read whenever it is installed, running or not, so a model manager keeps its rows after an Eject. Its `loadedByEngine` names the served model by its `--model` (the `root` of vLLM's `/v1/models`), not a `--served-model-name` alias, so it matches the inventory, and is `[]` while it is stopped. A missing `downloadedByEngine` key means the inventory was not read. The `/v1/models` HTTP surface returns the same shape. |
+| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Ollama, LM Studio, vLLM, and MTPLX have fixed sources; llama.cpp uses its selected source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. vLLM serves Hugging Face repos by their repo id: its browse list is the open, text-generating safetensors repos of `Qwen`, `nvidia`, `mistralai`, `microsoft` and `ibm-granite` (both `text-generation` and `image-text-to-text`), with parameter count and size, and, like llama.cpp, a `query` searches all of Hugging Face under the same rules. MTPLX loads only packs rebuilt for its own decode path, so its source is MTPLX's own published pack list (`https://mtplx.com/releases/models.json`) rather than a Hugging Face search, which would offer mostly packs the engine refuses to load; it is not searched, so the reply is the whole list for the client to filter. llama.cpp downloads any GGUF repo as `repo:quantization`; its Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. Both llama.cpp and vLLM are `searchable`. llama.cpp queries use its selected Hugging Face or ModelScope source; vLLM queries use Hugging Face. Each query is cached separately (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations and MTPLX packs only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
+| `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, downloadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. For an engine with `advertised_models: "loaded"` (MTPLX, which serves one pack per process; vLLM advertises `"available"` and lists its complete cached models instead), `modelsByEngine` holds only the served model's name, which is what a request may be routed to, and `downloadedByEngine` holds its `list_models` inventory, read whenever it is installed, running or not, so a model manager keeps its rows after an Eject. Its `loadedByEngine` names the served model the way the inventory names it (MTPLX by the residency join, which matches the directory its `/health` reports against that same listing; the launched arguments carry that directory, and no flag carries the id), so the two lists agree, and is `[]` while the engine is stopped; vLLM, whose inventory is reported the same way, names the cached repository id rather than a `--served-model-name` alias. A missing `downloadedByEngine` key means the inventory was not read. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
 | `engine:remote-pull-model` | `{ node, engine, model?, params?, opId? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`). An `opId`, under the same rules as `engine:action`'s, names the pull in place of a minted one: on its `engine:remote-progress` frames, in the reply, and to the peer. Held until every `engine:remote-cancel-pull` of that download sent before it has ended, so a retry cannot reach the peer ahead of the cancel it follows and be stopped by it |
@@ -529,12 +640,16 @@ platform. Explicit custom stop commands are executed unchanged.
 
 ### Adoption — start may attach to an engine it didn't launch
 
-Before spawning, `engine:start` **probes the chosen port's readiness
-endpoint**, including any manifest-declared JSON identity. If a compatible
-service answers there — the engine's own desktop
-app (e.g. the Ollama tray app on `11434`), or an instance left running from a
-previous session — the service **adopts** that instance: it marks the engine
-`running` without launching its own, rather than spawning a duplicate that
+Before spawning, `engine:start` **probes the readiness endpoint of every
+candidate port for the engine**: the configured port, plus the port the engine
+keeps in its own settings file when the manifest declares a `port_source`.
+That file is re-read on every probe round, so an engine the user moved in
+their own application is found where it actually is without restarting PAIR.
+The probe includes any manifest-declared JSON identity. If a compatible
+service answers on one of those ports — the engine's own desktop app (e.g.
+the Ollama tray app on `11434`), or an instance left running from a previous
+session — the service **adopts** that instance: it marks the engine `running`
+on that port without launching its own, rather than spawning a duplicate that
 would only collide on the port. Consequences worth knowing:
 
 - **An adopted engine has no child process the service owns**, so `engine:stop`
@@ -569,6 +684,32 @@ would only collide on the port. Consequences worth knowing:
   following `start:true` then adopts the running instance.
 - **Liveness reconciliation uses the same probe.** A fixed-port engine found
   already serving is reported `running: true` even though NVPAIR never started it.
+- **A port that answers 401 or 403 is a service waiting for an API key**, which
+  PAIR never sends. That engine is neither adopted nor restarted: a `start`
+  there fails at once, naming the refusing port and its status, instead of
+  waiting out the readiness timeout. While the refusal holds the engine carries
+  one standing `engine-manager:auth-blocked:<engine>` warning naming that port
+  — only for an engine the user turned on, and only on the way into that state,
+  because re-reporting per poll re-raises a dialog the user has already
+  dismissed. The warning clears once the port answers.
+- **Only the port a new copy would bind is blocked by a stranger.** A listener that
+  answers without identifying as this engine keeps `engine:start` and
+  `engine:install` off *that* port. On a candidate port that exists only to find
+  the engine — one named by `port_source` — it does not: PAIR hands the engine the
+  configured port when it launches one, so a stranger sitting on the searched port
+  is not in the way, and refusing over it left the engine offline because of a
+  service the user never asked PAIR about. A credential refusal is the exception,
+  because that one is the engine itself; it blocks from any candidate port.
+- **`engine:uninstall` keeps the wider rule.** Deleting an image cannot tell which
+  of an engine's ports a service answering on one of them was using, so it declines
+  while any unidentified service or unreadable port is found, and its message names
+  the port the listener was actually found on rather than the configured one.
+- **An adopted service is only given up after every candidate port refuses three
+  times in a row.** A timeout, or a listener that answers without identifying as
+  this engine, keeps the previous state rather than clearing it, so one dropped
+  request cannot flip a running engine to offline. When it does go, the port goes
+  back to the configured one instead of staying pinned where the adopted service
+  answered.
 
 `engine:status` and `engine:get-installed` check engines without holding the lock
 used by start, stop, and port changes. Overlapping requests for the same engine

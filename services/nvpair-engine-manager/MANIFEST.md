@@ -228,6 +228,9 @@ applies to the host the test runs on.
 | `args` | string[] | no | Arguments (process mode). |
 | `env` | object | no | Extra environment (merged over the inherited env). Use `{host}`/`{port}` for the listen address, e.g. `"OLLAMA_HOST": "{host}:{port}"`. |
 | `port` | int | no | Fixed port, or `0` to auto-assign a free loopback port. |
+| `port_source` | object | no | Where the engine keeps the port it really listens on: `{"file":"<path>","field":"<dotted key>"}`, `field` defaulting to `port`. PAIR probes that port beside `port`, so an engine the user started themselves is adopted wherever their own app put it instead of being read as an empty port. Read fresh each poll; a missing file or key tells PAIR nothing. Requires `ready`. |
+| `probe_ports` | int[] | no | Loopback ports worth probing beside `port`, because the engine's own software either looks there for a server that is already up, or lands there when its preferred port is taken. PAIR does not invent these: they are the ports the engine itself keeps, which is why a hand-started instance is found instead of read as an empty port. Requires `ready`. |
+| `probe_run` | int | no | How many ports a search walks upward from each port it asks, counting the port it starts from (`0`/`1` ask the declared ports alone). An engine that relocates when its port is taken takes the next bindable port, so one pushed off the port it wanted leaves a run of listeners behind it, and its real port is somewhere inside that run. A round asks at most 40 ports; a range it could not finish reads as unknown, never as empty. Requires `ready`. |
 | `bind` | string | no | Listen address, substituted as `{host}`. Empty ⇒ `127.0.0.1` (the safe default); an inference engine that serves the cluster sets `"0.0.0.0"`. A per-call `bind` via `engine:start {bind}` overrides this for one call, but a non-loopback value is honored only when the `engine_allow_lan_bind` node setting is on — otherwise the start is rejected with `-32602` (`bind must be a loopback address`). Probes always target loopback. |
 | `start` | string[][] | command mode | Ordered bring-up commands (each an argv) for `command` mode, e.g. `[["{cli}","server","start","--port","{port}"]]`. |
 | `cli` | string | no | The engine's control-CLI path for this platform, referenced as `{cli}` by start/stop/actions so the manifest's **global** actions resolve to the correct per-OS binary. |
@@ -243,10 +246,27 @@ string at that dotted object path. Missing, malformed, oversized, or
 wrong-typed response data fails the probe. `json_match` is invalid on TCP
 probes.
 
+A probe answers two questions at once: whether an engine is up, and whether the
+thing answering *is* that engine. A status code is not evidence about who is
+listening — on one Mac's loopback, vLLM answers `/health` with a bare `200`,
+llama.cpp with `200 {"status":"ok"}`, and MTPLX with `200 {"ok":true,…}` — so
+the body is read for every HTTP probe. A body naming another engine's declared
+identity, a body that is not a JSON object, or a body PAIR could not read
+counts as a foreign service rather than as this engine. A `409` whose body
+carries the `proxy-facade` error code is NVIDIA PAIR's own compatibility facade
+answering, which counts as an empty port: the facade fronts ports, it does not
+serve models, and a marked request is answered before it is ever forwarded.
+Declare `json_match` on `ready` and `health` wherever a bare success would
+identify the wrong process: MTPLX asks for `"ok": "true"` because another
+engine on the same machine answers `/health` with `{"status":"ok"}` and a third
+answers it with nothing at all, while llama.cpp separates itself on `/props`
+with `"role": "router"`.
+
 ### Actions
 
 Each action is a config-declared operation exposed over `engine:action`.
-Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
+Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, `launch_model`,
+`hf_pull`, or `stop_engine`:
 
 - **`http`** — call the engine's loopback control API. The caller's
   `params` are sent as the JSON request body by default. Set
@@ -286,18 +306,46 @@ Exactly one of `http`, `cmd`, `remove_path`, `hf_cache`, or `launch_model`:
   refusing when it cannot tell, and holds the engine's operation lock until the
   removal and any rollback of the launch settings are done.
 - **`launch_model`** — switch the model an engine serves, for an engine with no
-  load call because the model is a launch argument (vLLM). `launch_model.flag`
-  names the flag (`"--model"`). The action takes `{"model": "<id>"}` (a
-  Hugging Face id such as `org/name`; anything that could be read as a flag, a
-  path or a shell fragment is refused), writes it into the saved launch
-  settings exactly as the settings editor would, and restarts a running engine
-  on it. If the new model does not come up, the previous one is restored and the
+  load call because the model is a launch argument (vLLM, MTPLX).
+  `launch_model.flags` lists the flags PAIR writes, which for vLLM is just
+  `["--model"]`. The first is the flag the engine loads its weights from, and
+  these flags alone answer which model is selected: an engine launched without
+  any of them has nothing to load. `launch_model.clear_flags` names a flag the
+  engine still takes that PAIR has stopped writing, such as MTPLX's
+  `--model-id`. It is not simply left alone: a value sitting there names
+  whichever pack was selected when it was last written, so it is removed at
+  every change of model — on the load that replaces it and the eject that gives
+  it back alike. A flag in both lists is a manifest error, since that would
+  write a model into a flag and empty the same flag in one transaction, in an
+  order nothing in the manifest states. `launch_model.resolve: "pack-path"`
+  looks the value up before writing it, for an engine whose launch does not take
+  the name its caller uses: the pack named is replaced by the directory that
+  pack's own listing keeps it in, read from the `loaded_models`
+  `result.residency` the manifest must also declare. MTPLX wants it because its
+  own app launches `serve --model <pack directory>`, and a pack handed over that
+  way is loaded without the completeness checks a cache id goes through first. A
+  value the listing holds no row for, and a listing that could not be read, are
+  written as they were given: a launch argument a user typed is theirs to keep,
+  and a failed lookup is no licence to invent a path.
+  The action takes `{"model": "<id>"}` (a Hugging Face id such as `org/name`;
+  anything that could be read as a flag, a path or a shell fragment is refused),
+  writes the value it settled on into each flag it writes, of the saved launch
+  settings exactly as the settings editor would, empties the flags it clears,
+  and restarts a running engine on the result. An empty
+  flag list, a repeated flag, and an entry that is not a flag are manifest
+  errors. If the new model does not come up, the previous one is restored and the
   error says so; a stopped engine is started on it, and asking a running engine
-  for the model already in the launch arguments restarts nothing. The engine's
-  operation lock is held from reading the launch to the last restore. An engine
-  with a `launch_model` action will not start while its launch arguments lack
-  the flag: it has no model selected, and refusing beats letting the engine
-  pick and download a default of its own. The refusal is reported as a failed
+  for the model already in the launch arguments restarts nothing — unless a flag
+  it clears still holds a value, since starting the engine on the arguments just
+  saved is the only way to take that model away. The engine's
+  operation lock is held from reading the launch to the last restore, and the
+  lookup included, so the launch is written against the listing read under that
+  lock. An engine
+  with a `launch_model` action will not start while none of the flags it writes
+  names a model: it has no model selected, and refusing beats letting the
+  engine pick and download a default of its own. A leftover in a flag it only
+  clears is not a selection, so it does not change that. The refusal is reported as a
+  failed
   start, like the other refusals before launch, so a client that does not wait
   for the reply still learns of it. Requires `runtime.editable_launch`
   and `runtime.ready` on every platform.
@@ -537,8 +585,10 @@ path, an `uninstall` block sets neither `run` nor `remove`, `uninstall.remove`
 is present without a `models_dir` to preserve, an `uninstall.remove` target is
 the model store or inside it (whether spelled literally or as `{models_dir}`),
 an action sets none or more than one of
-`http`/`cmd`/`remove_path`/`hf_cache`/`launch_model`, an `hf_cache` action omits
-`dir` or sets only one of `delete` and `tool`, a `launch_model` flag is not a flag or a platform lacks
+`http`/`cmd`/`remove_path`/`hf_cache`/`launch_model`/`hf_pull`/`stop_engine`, an
+`hf_cache` action omits `dir` or sets only one of `delete` and `tool`, a
+`launch_model` action names no flag, repeats one, or lists a non-flag, or a
+platform lacks
 `editable_launch` or `ready`, `advertised_models` is unknown or `"loaded"`
 without a `loaded_models` action, `result.inventory_field` is set anywhere but
 the `loaded_models` action of an engine with `advertised_models` `"loaded"` or is

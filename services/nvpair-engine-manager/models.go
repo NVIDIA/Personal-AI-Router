@@ -231,14 +231,24 @@ func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 // it reports nothing loaded. While it runs, one
 // loaded_models response gives both the names it answers to (result.field,
 // such as vLLM's served name) and, when result.inventory_field is set, the same
-// models in the inventory's terms (vLLM's --model).
+// models in the inventory's terms (vLLM's --model). Where a manifest declares
+// result.residency instead — for an engine that answers with a name it invented
+// for the pack it mapped — the loaded marker comes from joining the engine's own
+// loaded-path answer onto the inventory rows, in the rows' spelling, and that
+// join reuses the inventory read above rather than reading the engine again.
 func (e *Executor) loadedOnlyEngineModels(ctx context.Context, name string, st EngineStatus, listSpec, loadedSpec *ActionResult) engineModels {
 	var r engineModels
 	if !st.Installed {
 		return r
 	}
+	// The inventory is read once and kept whole, because two questions get answered
+	// from it: which rows this engine has, and which of those rows the running server
+	// has mapped. For MTPLX that read is a subprocess, so the second question has to
+	// be asked of the same answer rather than of the engine again.
+	var inventory inventoryAnswer
 	if listSpec != nil {
-		r.downloaded, r.downloadedOK = e.queryModelList(ctx, name, "list_models", listSpec)
+		inventory = e.readInventory(ctx, name, "list_models", listSpec)
+		r.downloaded, r.downloadedOK = inventory.names, inventory.namesOK
 	}
 	if !st.Running {
 		// A stopped engine of this kind has nothing loaded, which is known, not
@@ -261,22 +271,51 @@ func (e *Executor) loadedOnlyEngineModels(ctx context.Context, name string, st E
 	if !r.advertisedOK || !r.loadedOK {
 		slog.Debug("engine:models loaded_models returned an invalid inventory", "engine", name)
 	}
+	// A manifest that declares the join gets to answer the residency question in the
+	// inventory's own terms, which is the only spelling the rows this list is unioned
+	// onto are keyed by. MTPLX names the model it serves
+	// "mtplx-flash-next-optimized-speed" and calls the same pack
+	// "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed" when it lists the cache, so
+	// reporting the served name here shows one resident pack as two rows — the cached
+	// one idle, with Load, Eject and Delete aimed by a lookup that never finds it, and
+	// the served name loaded. A row offering Load on an engine already serving it
+	// restarts that engine.
+	//
+	// The join's other answers are left alone. Where it cannot say which row is
+	// resident — the read did not arrive, the engine says nothing about its own model,
+	// or the directory it mapped is one no row names — the names it serves stay as the
+	// loaded list, because "I cannot tell which cached row this is" is not the statement
+	// "nothing is loaded". What that leaves is one loaded row that no cached row names,
+	// which is what a pack handed to the server as a pair bundle really is.
+	if loadedSpec.Residency != nil {
+		if row, ok := e.residentPackFrom(ctx, name, inventory); ok {
+			r.loaded, r.loadedOK = []string{row.repoID}, true
+		}
+	}
 	return r
 }
 
-// queryModelList runs one model-list action and extracts its names. ok is
-// false when the action failed or its response was not a valid list.
-func (e *Executor) queryModelList(ctx context.Context, name, action string, spec *ActionResult) ([]string, bool) {
+// readInventory runs one inventory action once and keeps the answer whole, so a caller
+// that needs two things out of one listing can take both from the read rather than make
+// it twice. queryModelList is the same read for a caller that only wants the names.
+func (e *Executor) readInventory(ctx context.Context, name, action string, spec *ActionResult) inventoryAnswer {
 	raw, err := e.Action(ctx, name, action, nil)
 	if err != nil {
 		slog.Debug("engine:models action failed", "engine", name, "action", action, "err", err)
-		return nil, false
+		return inventoryAnswer{action: action}
 	}
 	models, ok := extractStringsResult(raw, spec)
 	if !ok {
 		slog.Debug("engine:models action returned an invalid inventory", "engine", name, "action", action)
 	}
-	return models, ok
+	return inventoryAnswer{action: action, raw: raw, names: models, namesOK: ok, read: true}
+}
+
+// queryModelList runs one model-list action and extracts its names. ok is
+// false when the action failed or its response was not a valid list.
+func (e *Executor) queryModelList(ctx context.Context, name, action string, spec *ActionResult) ([]string, bool) {
+	answer := e.readInventory(ctx, name, action, spec)
+	return answer.names, answer.namesOK
 }
 
 // withModels records one engine's list in a per-engine map, creating the map on
@@ -304,24 +343,42 @@ func extractStrings(raw json.RawMessage, spec *ActionResult) []string {
 	return out
 }
 
-// extractStringsResult pulls spec.Field from each element of the required
-// top-level spec.Array. A present empty array is a successful, authoritative
-// empty inventory. A missing, null, or wrong-typed array is unknown and returns
-// ok=false so callers do not label it authoritative empty. Malformed rows
-// inside a valid array are skipped, preserving additive response compatibility. For an
-// unfiltered inventory, however, a non-empty array with no usable names is
-// malformed rather than authoritative empty.
-func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bool) {
+// inventoryArray decides what counts as an inventory answer at all: the body has to
+// be a JSON object carrying arrayField as an array of objects. A present empty
+// array was read and is authoritative empty; anything else — a missing or null
+// array, a wrong-typed one, a body that is not an object (which is how a cmd action
+// hands on stdout that is not JSON, and how empty stdout arrives) — was not read.
+//
+// Both extractors below start with this because they answer the same question about
+// the same kind of answer, and a caller that mistakes "could not read" for "nothing
+// cached" gives the wrong advice either way. Keeping one copy is also the point: the
+// rules are a contract between the two, so they must not be able to drift.
+func inventoryArray(raw json.RawMessage, arrayField string) ([]map[string]json.RawMessage, bool) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, false
 	}
-	arrRaw, ok := obj[spec.Array]
+	arrRaw, ok := obj[arrayField]
 	if !ok || bytes.Equal(bytes.TrimSpace(arrRaw), []byte("null")) {
 		return nil, false
 	}
 	var arr []map[string]json.RawMessage
 	if err := json.Unmarshal(arrRaw, &arr); err != nil {
+		return nil, false
+	}
+	return arr, true
+}
+
+// extractStringsResult pulls spec.Field from each element of the required
+// top-level spec.Array, read through inventoryArray. A present empty array is a
+// successful, authoritative empty inventory. A missing, null, or wrong-typed array
+// is unknown and returns ok=false so callers do not label it authoritative empty.
+// Malformed rows inside a valid array are skipped, preserving additive response
+// compatibility. For an unfiltered inventory, however, a non-empty array with no
+// usable names is malformed rather than authoritative empty.
+func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bool) {
+	arr, ok := inventoryArray(raw, spec.Array)
+	if !ok {
 		return nil, false
 	}
 	out := make([]string, 0)
@@ -342,6 +399,44 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 		return nil, false
 	}
 	return out, true
+}
+
+// extractPackRows reads an inventory as packs rather than as names: every element
+// of arrayField that carries a non-empty keyField and a non-empty pathField
+// becomes one row, and anything else is skipped. A row PAIR cannot both name and
+// locate is not a pack it can act on, so dropping it keeps a partially readable
+// listing from being read as a list of packs.
+//
+// The empty-versus-unknown rules are extractStringsResult's, through inventoryArray,
+// because they answer the same question: a present empty array was read and is
+// authoritative, a missing, null or wrong-typed array was not read, and a non-empty
+// array with nothing usable in it is malformed. That distinction is the whole point
+// of returning ok — a listing that arrived broken must not be reported as "nothing
+// cached".
+func extractPackRows(raw json.RawMessage, arrayField, keyField, pathField string) ([]packRow, bool) {
+	arr, ok := inventoryArray(raw, arrayField)
+	if !ok {
+		return nil, false
+	}
+	field := func(el map[string]json.RawMessage, name string) string {
+		var value string
+		if err := json.Unmarshal(el[name], &value); err != nil {
+			return ""
+		}
+		return value
+	}
+	rows := make([]packRow, 0, len(arr))
+	for _, el := range arr {
+		key, path := field(el, keyField), field(el, pathField)
+		if key == "" || path == "" {
+			continue
+		}
+		rows = append(rows, packRow{repoID: key, path: path})
+	}
+	if len(arr) > 0 && len(rows) == 0 {
+		return nil, false
+	}
+	return rows, true
 }
 
 // matchRow reports whether an element passes an ActionResult row filter.

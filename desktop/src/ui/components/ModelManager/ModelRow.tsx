@@ -4,6 +4,7 @@
 import { memo, useMemo } from 'react'
 import { Divider, Stack } from '@nvidia/foundations-react-core'
 import { useDropdownClickable } from '@/ui/hooks/useDropdownClickable'
+import { deleteActionName, deleteMenuItemLabel, modelDeleteMode } from '@/ui/utils/model-delete'
 import { ModelRowHeader } from './ModelRowHeader'
 import { ModelRowSecondaryRow } from './ModelRowSecondaryRow'
 import type { ModelRowProps } from '@/ui/types/model-row'
@@ -28,6 +29,8 @@ function pendingLabel(action: EngineCommandType): string | null {
 function ModelRowInner({
     model,
     isRunning,
+    engineName,
+    residencyKnown,
     capabilities,
     progress,
     pendingAction,
@@ -46,6 +49,10 @@ function ModelRowInner({
         // A command is already in flight for this model -- lock the whole menu so
         // the user cannot fire a second conflicting op before it resolves.
         const busy = !isRunning || pendingAction !== undefined
+        // `capabilities` is a module-level constant per engine, so depending on the
+        // object rather than picking its fields keeps this honest: the delete mode
+        // reads three of them and they cannot change independently of its identity.
+        const deleteMode = modelDeleteMode(capabilities, residencyKnown, isLoaded)
         items.push({
             id: 'load',
             children: 'Load',
@@ -64,18 +71,18 @@ function ModelRowInner({
         }
         if (capabilities.hasDeleteModel) {
             items.push({
-                id: 'delete',
-                children: 'Delete',
+                id: deleteActionName(deleteMode),
+                children: deleteMenuItemLabel(deleteMode, engineName),
                 danger: true,
-                disabled: busy || (isLoaded && !!capabilities.deleteBlockedWhileLoaded)
+                disabled: busy || deleteMode === 'blocked'
             })
         }
         return items
     }, [
-        capabilities.hasEject,
-        capabilities.hasDeleteModel,
-        capabilities.deleteBlockedWhileLoaded,
+        capabilities,
+        residencyKnown,
         isLoaded,
+        engineName,
         isRunning,
         model.downloaded,
         pendingAction

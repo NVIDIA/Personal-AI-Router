@@ -391,11 +391,16 @@ func (e *Executor) deleteHFModel(ctx context.Context, st *engineState, engine, d
 		}
 		unselected := false
 		if selected == id {
-			flag := modelLaunchFlag(st.manifest)
-			if edit.before.Running || flag == "" || !edit.before.Editable {
+			if len(modelLaunchFlags(st.manifest)) == 0 {
 				return refused
 			}
-			text, _, err := withoutLaunchFlag(edit.before.LaunchText, flag)
+			if edit.before.Running || !edit.before.Editable {
+				return refused
+			}
+			// The model is being taken out of the launch, so every flag that can carry
+			// one goes, including a flag this engine's action no longer writes: leaving
+			// a second flag holding this id would put the selection right back.
+			text, _, err := withoutLaunchFlags(edit.before.LaunchText, modelClearFlags(st.manifest))
 			if err != nil {
 				return err
 			}
@@ -463,10 +468,5 @@ func (e *Executor) selectedModelLocked(edit *launchEdit) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	flag := modelLaunchFlag(edit.st.manifest)
-	if flag == "" {
-		return "", nil
-	}
-	model, _ := launchFlagValue(tokens, flag)
-	return model, nil
+	return launchModelValue(tokens, modelLaunchFlags(edit.st.manifest)), nil
 }
