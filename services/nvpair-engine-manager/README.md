@@ -493,10 +493,36 @@ Stopped      --engine:start----> (adopt if already serving the port, else spawn)
 Running      --engine:stop-----> (stop signal, bounded grace, force if needed) --> Stopped
 ```
 
-Detect uses the manifest's `detect` paths. Install is one-shot and
-user-mode — an HTTPS download, verified against the manifest's `sha256`
-when one is pinned (an unpinned fetch runs with a loud warning). Start
-waits for the readiness probe, then runs a periodic health probe; an
+Detect uses the manifest's `detect` paths. Install is user-mode — an HTTPS
+download, verified against the manifest's `sha256` when one is pinned (an
+unpinned fetch runs with a loud warning).
+
+LM Studio installation retries recognized transient download failures up to
+three total attempts, with waits of two and four seconds. Each attempt fetches
+a fresh installer and removes PAIR's temporary downloads before another attempt
+starts. The same policy covers local and remote installations; other engines
+retain a single installation attempt. Retrying restarts installation and does
+not promise download resumption.
+
+Retryable failures include network timeouts, temporary DNS failures, connection
+resets, HTTP 408/429/500/502/503/504, explicit downloader timeout/reset messages,
+and LM Studio's `_checksum_value: unbound variable` installer error. That vendor
+error can follow a failed checksum download, so it does not establish that the
+network timed out. Cancellation, checksum mismatches, permissions, missing
+dependencies, unsupported platforms, and unrecognized errors are not retried.
+
+Progress remains in flight during retries. Only the final failure is reported,
+using the same reason in the RPC response, progress notification, and error
+entry. A confirmed timeout says, "LM Studio download timed out after 3 attempts.
+Check your connection and try again." The checksum-variable error without
+timeout evidence instead says, "LM Studio’s installer could not download its
+checksum after 3 attempts. Check your connection and try again." Other recognized
+transient failures say, "LM Studio download failed after 3 attempts. Check your
+connection and try again." The original diagnostic and attempt number remain in
+service logs. Check connectivity to `lmstudio.ai` and `llmster.lmstudio.ai`, then
+use Retry after the connection recovers. Verification is never bypassed.
+
+Start waits for the readiness probe, then runs a periodic health probe; an
 unexpected exit is reported. The bundled Ollama manifest allows up to ten
 minutes for startup because GPU discovery can exceed the previous 30-second
 allowance on supported Windows systems. The deadline remains finite: if Ollama
