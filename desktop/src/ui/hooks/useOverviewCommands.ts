@@ -27,6 +27,8 @@ export function useOverviewCommands(): {
         const unsubscribe = window.windowApi.window.onOverviewCommand(command => {
             if (command.type === 'focus-node') {
                 focusNodeEngineSettings(command.nodeId)
+            } else if (command.type === 'dismiss-message') {
+                setMessages(prev => prev.filter(message => message.id !== command.id))
             } else {
                 setMessages(prev =>
                     prev.some(m => m.id === command.message.id) ? prev : [...prev, command.message]

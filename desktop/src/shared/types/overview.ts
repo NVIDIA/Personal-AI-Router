@@ -5,7 +5,10 @@
 export type OverviewTab = 'overview' | 'settings'
 
 /** What an Overview message modal's action button does when clicked. */
-export type OverviewMessageAction = 'open-update' | 'open-service'
+type OverviewMessageAction =
+    | 'open-update'
+    | 'open-service'
+    | { type: 'open-engine-settings'; nodeId: string }
 
 /**
  * A one-off message surfaced as a modal on the Overview window. Replaces the
@@ -28,3 +31,4 @@ export interface OverviewMessage {
 export type OverviewCommand =
     | { type: 'focus-node'; nodeId: string }
     | { type: 'message'; message: OverviewMessage }
+    | { type: 'dismiss-message'; id: string }

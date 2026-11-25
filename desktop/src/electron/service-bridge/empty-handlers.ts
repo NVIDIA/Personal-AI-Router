@@ -240,15 +240,21 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
     // Use the engine-manager's stable error key. If the manager already reported
     // the operation failure, nvpair-errors upserts this fallback instead of showing
     // a duplicate; admission/transport failures still get a visible error.
-    const failPendingOp = (action: string, operation: 'install' | 'uninstall') => {
+    const failPendingOp = (operation: 'install' | 'uninstall' | 'update') => {
         return (error: string): void => {
             state.clearPendingEngineOp(payload.engineType)
-            supervisor.reportError(`Failed to ${action} ${engine}: ${error}`, 'error', undefined, {
-                id: `engine-manager:${operation}-failed:${engine}`,
-                engineType: engine,
-                operation,
-                action: 'retry'
-            })
+            supervisor.reportError(
+                `Failed to ${operation} ${engine}: ${error}`,
+                'error',
+                undefined,
+                {
+                    id: `engine-manager:${operation}-failed:${engine}`,
+                    nodeId: payload.nodeId,
+                    engineType: payload.engineType,
+                    operation,
+                    action: 'retry'
+                }
+            )
         }
     }
     const failAction =
@@ -273,7 +279,7 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                 'broker',
                 'engine:install',
                 { engine, start: true },
-                failPendingOp('install', 'install'),
+                failPendingOp('install'),
                 true
             )
             break
@@ -283,28 +289,25 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                 'broker',
                 'engine:uninstall',
                 { engine },
-                failPendingOp('uninstall', 'uninstall'),
+                failPendingOp('uninstall'),
                 true
             )
             break
         case 'update':
-            // The engine-manager serializes per-engine ops via its lifecycle
-            // lock, so the queued install waits for the uninstall to finish. The
-            // uninstall's engine:state-changed briefly clears this, then the
-            // install's progress re-establishes `installing`.
+            if (!payload.nodeId || payload.nodeId !== state.getSelfId()) {
+                supervisor.reportError(
+                    'Select an identified node to update its engine.',
+                    'warning',
+                    'engine-cmd:update'
+                )
+                break
+            }
             state.beginLocalEngineOp(payload.engineType, 'installing')
             supervisor.sendProcess(
                 'broker',
-                'engine:uninstall',
+                'engine:update',
                 { engine },
-                failPendingOp('update', 'uninstall'),
-                true
-            )
-            supervisor.sendProcess(
-                'broker',
-                'engine:install',
-                { engine, start: true },
-                failPendingOp('update', 'install'),
+                failPendingOp('update'),
                 true
             )
             break
@@ -438,13 +441,8 @@ async function toggleRemoteEngine(
 
 /**
  * Dispatch a UI engine command to a remote peer via `nvpair-engine-manager`'s
- * `engine:remote-*` client methods (cluster-scoped mTLS `ec` surface). Install,
- * start/stop, pull, and model load/unload/delete are supported remotely;
- * uninstall and update remain local-only. Ports are not commands at all — they
- * travel the settings channels, which do reach a peer.
- * (optimistic status, awaited completion, authoritative refresh) lives on the
- * supervisor because the backend settles these ops only via the RPC reply, never
- * a terminal notification.
+ * `engine:remote-*` client methods (cluster-scoped mTLS `ec` surface). The
+ * supervisor tracks progress until the RPC completes and refreshes peer state.
  */
 function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): void {
     const supervisor = getModularSupervisor()
@@ -458,7 +456,27 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
     switch (payload.command) {
         case 'install':
         case 'installAll':
-            void supervisor.installEngineRemote(nodeId, engine, payload.engineType, true)
+            void supervisor.installOrUpdateEngineRemote(
+                nodeId,
+                engine,
+                payload.engineType,
+                'install',
+                true
+            )
+            break
+        case 'update':
+            if (!getModularBridgeState().canCheckEngineUpdate(nodeId, payload.engineType)) {
+                refuseRemote(
+                    'Updating requires a connected, paired node with this engine installed.'
+                )
+                break
+            }
+            void supervisor.installOrUpdateEngineRemote(
+                nodeId,
+                engine,
+                payload.engineType,
+                'update'
+            )
             break
         case 'toggle':
             void toggleRemoteEngine(nodeId, engine, payload.engineType)
@@ -477,10 +495,7 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
             }
             break
         case 'uninstall':
-        case 'update':
-            refuseRemote(
-                `${payload.command} is only available on the local node — remote uninstall/update is not supported yet.`
-            )
+            refuseRemote('Engines can only be uninstalled on the local node.')
             break
         case 'deleteModel':
         case 'loadModel':
@@ -522,7 +537,7 @@ async function handleEngineCommand(payload?: WsInvokeRequest<'engine:command'>):
     // action; LM Studio and llama.cpp use their manifest `load_model` actions.
 
     // Remote peers: `nvpair-engine-manager` exposes `engine:remote-*` client methods
-    // (cluster mTLS `ec` surface) for install/start/stop/pull and model ops.
+    // (cluster mTLS `ec` surface) for lifecycle and model operations.
     // Local-only ops are refused in {@link routeRemoteEngineCommand}.
     noteStopRequest(payload)
     const selfId = getModularBridgeState().getSelfId()

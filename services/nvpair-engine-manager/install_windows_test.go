@@ -20,9 +20,54 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLlamaCPPInstall_PreservesDestinationPathWithSpaces(t *testing.T) {
-	serverArchive := testZIP(t, "llama-server.exe", "server")
-	cudartArchive := testZIP(t, "cudart64_12.dll", "runtime")
+func TestOllamaDirectoryRename_WaitsForWindowsToReleaseTheDirectory(t *testing.T) {
+	parent := t.TempDir()
+	staged := filepath.Join(parent, "staged")
+	installed := filepath.Join(parent, "ollama")
+	require.NoError(t, os.Mkdir(staged, 0o700))
+	// A directory opened without delete sharing reproduces the handle left
+	// briefly open after Windows finishes executing the staged binary.
+	handle, err := os.Open(staged)
+	require.NoError(t, err)
+	closed := make(chan error, 1)
+	time.AfterFunc(200*time.Millisecond, func() { closed <- handle.Close() })
+
+	err = renameEngineDirectory(staged, installed)
+
+	require.NoError(t, <-closed)
+	require.NoError(t, err)
+	assert.DirExists(t, installed)
+}
+
+func TestReplaceOllamaInstall_RestoresCurrentVersionWhenStagingRemainsLocked(t *testing.T) {
+	e, binary := ollamaUpdateFixture(t, "1.1.0", false)
+	st, err := e.state("ollama")
+	require.NoError(t, err)
+	staged := t.TempDir()
+	handle, err := os.Open(staged)
+	require.NoError(t, err)
+
+	err = e.replaceEngineInstall(t.Context(), st, staged, false)
+
+	require.NoError(t, handle.Close())
+	require.Error(t, err)
+	version, err := ollamaBinaryVersion(t.Context(), binary)
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.0", version)
+	assert.NoDirExists(t, st.installDir+".update-backup")
+}
+
+func TestLlamaCPPInstall_ExtractsBothArchivesWithWindowsPowerShell(t *testing.T) {
+	// A parent shell can supply an Archive module incompatible with powershell.exe.
+	modulePath := t.TempDir()
+	module := filepath.Join(modulePath, "Microsoft.PowerShell.Archive")
+	require.NoError(t, os.Mkdir(module, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(module, "Microsoft.PowerShell.Archive.psm1"),
+		[]byte("function Expand-Archive { throw 'Incompatible Archive module' }"), 0o600))
+	t.Setenv("PSModulePath", modulePath)
+
+	serverArchive := testZIP(t, map[string]string{"llama-server.exe": "server", "LICENSE": "server license"})
+	cudartArchive := testZIP(t, map[string]string{"cudart64_12.dll": "runtime", "LICENSE": "runtime license"})
 	archives := map[string][]byte{
 		"/server.zip": serverArchive,
 		"/cudart.zip": cudartArchive,
@@ -59,6 +104,7 @@ func TestLlamaCPPInstall_PreservesDestinationPathWithSpaces(t *testing.T) {
 	for name, want := range map[string]string{
 		"llama-server.exe": "server",
 		"cudart64_12.dll":  "runtime",
+		"LICENSE":          "runtime license",
 	} {
 		data, err := os.ReadFile(filepath.Join(baseDir, "llamacpp", name))
 		require.NoError(t, err, "read extracted %s", name)
@@ -66,14 +112,16 @@ func TestLlamaCPPInstall_PreservesDestinationPathWithSpaces(t *testing.T) {
 	}
 }
 
-func testZIP(t *testing.T, name, contents string) []byte {
+func testZIP(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
 	archive := zip.NewWriter(&buffer)
-	file, err := archive.Create(name)
-	require.NoError(t, err, "create zip entry %s", name)
-	_, err = file.Write([]byte(contents))
-	require.NoError(t, err, "write zip entry %s", name)
+	for name, contents := range files {
+		file, err := archive.Create(name)
+		require.NoError(t, err, "create zip entry %s", name)
+		_, err = file.Write([]byte(contents))
+		require.NoError(t, err, "write zip entry %s", name)
+	}
 	require.NoError(t, archive.Close(), "close zip archive")
 	return buffer.Bytes()
 }

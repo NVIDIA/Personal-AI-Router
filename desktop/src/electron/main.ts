@@ -26,6 +26,8 @@ import { macPrivilege } from '@/electron/services/mac-privilege-service'
 import { registerAllIpc } from '@/electron/ipc'
 import { destroyConnector, destroyConnectorSync, initializeConnector } from '@/electron/connector'
 import { initializeUpdater } from '@/electron/updater'
+import { subscribeEngineUpdateNotifications } from '@/electron/updater/engine-update-notification'
+import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import { ensureNvpairOnPath } from '@/electron/nvpair-command'
 import { isAppDataWipeScheduled } from '@/electron/app-data-wipe-orchestrator'
 import { destroyInferenceDemoSync, stopInferenceDemo } from '@/electron/inference-demo'
@@ -162,6 +164,12 @@ if (!gotTheLock || exitRequested) {
 
         registerAllIpc()
         initializeUpdater()
+        const unsubscribeEngineUpdates = subscribeEngineUpdateNotifications(nodeId => {
+            const state = getModularBridgeState()
+            if (nodeId === state.getSelfId()) return 'This node'
+            return state.getNodesInitial().nodes[nodeId]?.name || nodeId
+        })
+        app.once('will-quit', unsubscribeEngineUpdates)
 
         // Bound startup on broker `app:ready` before opening the normal Overview.
         // Proxy readiness is not part of this gate — it is an asynchronous

@@ -147,6 +147,23 @@ func downloadUntilInterrupted(interrupts int) {
 }
 
 func main() {
+	// Installed and staged test executables each report their own release.
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		if output, err := os.ReadFile(os.Args[0] + ".version-output"); err == nil {
+			fmt.Fprint(os.Stderr, string(output))
+			return
+		}
+		version, err := os.ReadFile(os.Args[0] + ".version")
+		if err != nil {
+			os.Exit(2)
+		}
+		fmt.Fprintln(os.Stderr, "Warning: could not connect to a running Ollama instance")
+		fmt.Fprintf(os.Stderr, "Warning: client version is %s\n", version)
+		return
+	}
+	if _, err := os.Stat(os.Args[0] + ".fail-start"); err == nil {
+		os.Exit(1)
+	}
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
 		for _, key := range []string{"OLLAMA_ORIGINS", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST", "MODEL_ENDPOINT"} {
@@ -271,6 +288,14 @@ func main() {
 			time.Sleep(time.Minute)
 			os.Exit(2)
 		case "daemon", "server":
+			if strings.Join(os.Args[1:], " ") == "daemon status" {
+				if data, err := os.ReadFile(os.Getenv("PAIR_TEST_LMS_STOP")); err == nil && string(data) == `["daemon","down"]` {
+					fmt.Println("LM Studio is not running")
+					return
+				}
+				fmt.Println(os.Getenv("PAIR_TEST_LMS_HOST"))
+				return
+			}
 			if strings.Join(os.Args[1:], " ") == "daemon status --json" {
 				if os.Getenv("PAIR_TEST_LMS_STATUS") == "command-error" {
 					fmt.Fprintln(os.Stderr, "host status unavailable")
@@ -282,6 +307,19 @@ func main() {
 			data, err := json.Marshal(os.Args[1:])
 			if err != nil || os.WriteFile(os.Getenv("PAIR_TEST_LMS_STOP"), data, 0o600) != nil {
 				os.Exit(1)
+			}
+			return
+		case "upgrade":
+			// A staged llmster registers its new executable and waits for Enter on Windows.
+			key, err := bufio.NewReader(os.Stdin).ReadByte()
+			if err != nil || key != '\n' || strings.Join(os.Args[1:], " ") != "upgrade --channel=stable" {
+				os.Exit(1)
+			}
+			if pointer := os.Getenv("PAIR_TEST_LLMSTER_POINTER"); pointer != "" {
+				data, err := os.ReadFile(pointer + ".next")
+				if err != nil || os.WriteFile(pointer, data, 0o600) != nil {
+					os.Exit(1)
+				}
 			}
 			return
 		case "-I": // stand in for the memory probe's Python -I -c invocation
