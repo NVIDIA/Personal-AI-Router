@@ -540,9 +540,13 @@ would only collide on the port. Consequences worth knowing:
 - **An adopted engine has no child process the service owns**, so `engine:stop`
   (and `engine:restart`'s stop phase, and shutdown's cleanup) resolves the PID
   bound to the engine's port and terminates it **only when that process is
-  running the very binary NVPAIR manages for the engine** (for an engine
-  installed as a Python package, such as vLLM, that is the interpreter running the
-  engine's script, read from the process's command line on Linux) — reclaiming an orphan
+  running the very binary NVPAIR manages for the engine**, read from what the
+  kernel mapped at exec time (`/proc/<pid>/exe` on Linux, the first `txt`
+  image lsof reports on macOS) rather than the process's own argv, which
+  anything can rewrite (for an engine installed as a Python package, such as
+  vLLM, that is the interpreter running the engine's script, read from the
+  process's command line where it can be trusted, on Linux; a script-run
+  vLLM on macOS stays declined) — reclaiming an orphan
   a prior run left on our own managed port (e.g. an `ollama serve` on `11435`
   whose handle was lost after a crash). This is precise to the port, so a
   genuine third-party listener on a *different* port (Ollama's own desktop app
