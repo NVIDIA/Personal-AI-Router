@@ -79,6 +79,7 @@ func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	accept("ollama openai chat", ollama, http.MethodPost, "/v1/chat/completions", roleInferencePOST)
 	accept("ollama openai responses", ollama, http.MethodPost, "/v1/responses", roleInferencePOST)
 	accept("ollama anthropic messages", ollama, http.MethodPost, "/v1/messages", roleInferencePOST)
+	accept("ollama decision model", ollama, http.MethodPost, "/v1/systemone", roleInferencePOST)
 	accept("ollama native list", ollama, http.MethodGet, "/api/tags", roleModelListNativeGET)
 	accept("ollama openai list", ollama, http.MethodGet, "/v1/models", roleModelListOpenAIGET)
 	accept("ollama show", ollama, http.MethodPost, "/api/show", roleModelLookupPOST)
@@ -99,10 +100,13 @@ func TestRoleFor_ClassifiesOnlyDeclaredRoutes(t *testing.T) {
 	reject("wrong method on inference", ollama, http.MethodGet, "/api/chat")
 	reject("wrong method on responses", ollama, http.MethodGet, "/v1/responses")
 	reject("wrong method on show", ollama, http.MethodGet, "/api/show")
+	reject("wrong method on decision", ollama, http.MethodGet, "/v1/systemone")
 
 	reject("lmstudio models passthrough", lmstudio, http.MethodGet, "/models")
 	// LM Studio serves no native Ollama routes, so /api/chat is forwarded verbatim.
 	reject("lmstudio has no native routes", lmstudio, http.MethodPost, "/api/chat")
+	// Decision models are an Ollama feature, so LM Studio forwards the path verbatim.
+	reject("lmstudio has no decision route", lmstudio, http.MethodPost, "/v1/systemone")
 	reject("lmstudio has no show", lmstudio, http.MethodPost, "/api/show")
 
 	reject("llamacpp models post passthrough", llamacpp, http.MethodPost, "/models")

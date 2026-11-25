@@ -133,6 +133,9 @@ var ollamaBaseRoutes = []route{
 	{Path: "/api/chat", Role: roleInferencePOST},
 	{Path: "/api/embeddings", Role: roleInferencePOST},
 	{Path: "/api/embed", Role: roleInferencePOST},
+	// Decision models (capability "decision") answer only this route; they
+	// refuse /api/chat and /api/generate.
+	{Path: "/v1/systemone", Role: roleInferencePOST},
 	{Path: "/api/show", Role: roleModelLookupPOST},
 	{Path: "/api/tags", Role: roleModelListNativeGET},
 	{Path: "/v1/models", Role: roleModelListOpenAIGET},

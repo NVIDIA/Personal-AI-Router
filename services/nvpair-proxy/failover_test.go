@@ -396,6 +396,64 @@ func TestHandleHTTP_ResponsesFailsOverFromOlderEngine(t *testing.T) {
 	require.Equal(t, int32(1), newHits.Load(), "requests to newer engine")
 }
 
+// A decision-model request goes only to nodes that advertise the model, fails
+// over when an advertised owner answers 404 (its inventory was stale), and is
+// reported as a workload like any other inference call.
+func TestHandleHTTP_RoutesDecisionRequestToAModelOwner(t *testing.T) {
+	tc := ollamaCase(t)
+	const (
+		decisionModel = "clef-flash:9b-q8_0"
+		requestBody   = `{"model":"clef-flash:9b-q8_0","questions":[{"name":"q","type":"choice"}]}`
+		answer        = `{"probabilities":{"new_document":0.9,"same_document":0.1}}`
+	)
+	var nonOwnerHits, staleOwnerHits, ownerHits atomic.Int32
+	nonOwner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nonOwnerHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer nonOwner.Close()
+	staleOwner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		staleOwnerHits.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		_, err := io.WriteString(w, `{"error":"model 'clef-flash:9b-q8_0' not found"}`)
+		assert.NoError(t, err, "write not-found result")
+	}))
+	defer staleOwner.Close()
+	var gotBody string
+	ownerRoutes := http.NewServeMux()
+	ownerRoutes.HandleFunc("POST /v1/systemone", func(w http.ResponseWriter, r *http.Request) {
+		ownerHits.Add(1)
+		body, err := io.ReadAll(r.Body)
+		assert.NoError(t, err, "read forwarded body")
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, err = io.WriteString(w, answer)
+		assert.NoError(t, err, "write decision result")
+	})
+	owner := httptest.NewServer(ownerRoutes)
+	defer owner.Close()
+
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "a-non-owner", nonOwner.URL, tc.advertisedModel))
+	disc.AddManual(nodeForModel(t, "b-stale-owner", staleOwner.URL, decisionModel))
+	disc.AddManual(nodeForModel(t, "c-owner", owner.URL, decisionModel))
+	events := &recRW{}
+	p := newTestProxy(tc.profile, NewCodec(events), disc, tc.profile.FacadePort)
+	t.Cleanup(p.closeIdleTransports)
+	p.SetPriority([]string{"a-non-owner", "b-stale-owner", "c-owner"})
+
+	rec := httptest.NewRecorder()
+	p.soleFacade().handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(requestBody)))
+
+	require.Equal(t, http.StatusOK, rec.Code, "status")
+	require.Equal(t, answer, rec.Body.String(), "response from the model owner")
+	require.Zero(t, nonOwnerHits.Load(), "requests to node without the model")
+	require.Equal(t, int32(1), staleOwnerHits.Load(), "requests to owner whose inventory was stale")
+	require.Equal(t, int32(1), ownerHits.Load(), "requests to model owner")
+	assert.Equal(t, requestBody, gotBody, "forwarded request body")
+	assert.Contains(t, events.String(), "workload:submitted", "decision request reported as a workload")
+}
+
 // TestHandleHTTP_AggregatesNativeModelList is Ollama-scoped because the
 // native "models" dialect is Ollama's alone — LM Studio serves no /api/tags.
 // The OpenAI dialect both engines share is covered by the sibling test below.

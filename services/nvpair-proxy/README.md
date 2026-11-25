@@ -102,7 +102,7 @@ and the health crash key are matched against each other, so they move together
 | Standalone port, used when `port` is omitted | 11435 | 1234 | 8080 | 8000 |
 | Persisted-port file (declared, not derived) | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` |
 | Model-list routes | `GET /api/tags` (native), `GET /v1/models` (OpenAI) | `GET /v1/models` (OpenAI) | `GET /models`, `GET /v1/models` (OpenAI; both query upstream `/models`) | `GET /v1/models` (OpenAI) |
-| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below | OpenAI set below |
+| Inference routes | `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed`, `/v1/systemone` (decision models), plus the OpenAI and Anthropic Messages sets below | OpenAI and Anthropic Messages sets below | OpenAI set below | OpenAI set below |
 | Model naming | untagged means `:latest`, so `llama3` and `llama3:latest` are one model | identifiers compared byte for byte | identifiers compared byte for byte | identifiers compared byte for byte |
 
 All four facades classify these OpenAI-compatible POST routes as inference:
