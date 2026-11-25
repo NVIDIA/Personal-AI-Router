@@ -38,6 +38,9 @@ type settingsHarness struct {
 	failResultSave      atomic.Bool
 	otherEnginePort     atomic.Int32
 	previewPreserveCORS atomic.Bool
+	failRebind          atomic.Bool
+	ports               []int
+	setEffectivePort    func(int)
 	entered, release    chan struct{}
 	// launchMu guards the fixture's launch state, which a suspended
 	// engine:configure-launch mutates while the reader loop keeps serving.
@@ -72,7 +75,7 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 	for _, release := range releases {
 		release()
 	}
-	h := &settingsHarness{b: &Broker{codec: NewCodec(&bytes.Buffer{}), nodeID: "target", clusterDir: filepath.Join(t.TempDir(), "cluster")}}
+	h := &settingsHarness{b: &Broker{codec: NewCodec(&bytes.Buffer{}), nodeID: "target", clusterDir: filepath.Join(t.TempDir(), "cluster")}, ports: ports}
 	worker, codec := newTestRPCWorkerPipe(t)
 	h.b.setEngineMgr(worker)
 	proxyWorker, proxyCodec := newTestRPCWorkerPipe(t)
@@ -111,6 +114,10 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 			}
 			if !assert.NoError(t, json.Unmarshal(msg.Params, &p), "decode proxy port request") {
 				return
+			}
+			if h.failRebind.Load() {
+				assert.NoError(t, proxyCodec.RespondError(msg.ID, -32000, "fixture bind failure"))
+				continue
 			}
 			h.proxyRebinds.Add(1)
 			proxy.readyMu.Lock()
@@ -214,6 +221,11 @@ func newSettingsHarnessForEngine(t *testing.T, engine string) *settingsHarness {
 			}
 		}
 	}()
+	h.setEffectivePort = func(port int) {
+		h.launchMu.Lock()
+		launch.EffectivePort = port
+		h.launchMu.Unlock()
+	}
 	return h
 }
 
@@ -440,6 +452,113 @@ func TestSettingsPortValidation_IncludesStoppedEnginesAndAliases(t *testing.T) {
 	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
 	require.NoError(t, err, "proxy alias reservation ignored (%v)", preview)
 	require.NotEmpty(t, preview.Errors, "proxy alias reservation ignored (%v)", preview)
+}
+
+// Rig regression: an adopted, externally started instance keeps its port
+// through a proxy-only apply, so the facade must never be pointed at it.
+func TestSettingsPortValidation_RefusesProxyOverlapWithRunningListener(t *testing.T) {
+	h := newSettingsHarness(t)
+	external, release := reserveSettingsPort(t)
+	release()
+	h.setEffectivePort(external)
+	p := h.request(t)
+	p.Settings.ProxyPort = external
+	preview, err := h.b.previewEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	require.Contains(t, preview.Errors["ports"], "held by the running", "proxy overlap with the running engine's live port accepted (%v)", preview)
+	// A restart vacates the live port before the rebind, so the same
+	// overlap stays legitimate.
+	p = h.request(t)
+	p.Settings.ServerPort = h.ports[1]
+	p.Settings.ProxyPort = external
+	preview, err = h.b.previewEngineSettings(context.Background(), p, "")
+	require.NoError(t, err, "restart overlap rejected (%v)", preview)
+	require.Empty(t, preview.Errors, "restart overlap rejected (%v)", preview)
+}
+
+// The journal's desired revision survives a failed apply, but a port that
+// just failed to bind must not become the next spawn port - that left the
+// strata facade unbound across proxy restarts.
+func TestSettingsPrepareExplicit_FailedApplySpawnsLastAppliedPort(t *testing.T) {
+	h := newSettingsHarness(t)
+	good, goodRelease := reserveSettingsPort(t)
+	goodRelease()
+	p := h.request(t)
+	p.Settings.ProxyPort = good
+	receipt, err := h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", receipt.Phase, "first proxy move failed")
+	bad, badRelease := reserveSettingsPort(t)
+	badRelease()
+	h.failRebind.Store(true)
+	p = h.request(t)
+	p.Settings.ProxyPort = bad
+	_, err = h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	require.Equal(t, "failed", h.b.engineSettings["ollama"].Snapshot.Phase, "failed apply not recorded")
+	require.True(t, h.b.prepareExplicitEngineSettings("ollama"))
+	require.Equal(t, int32(good), h.b.ollamaState().startupPort.Load(), "spawn port must skip the failed proxy choice")
+}
+
+func TestSettingsPrepareExplicit_FailedApplySpawnsObservedPorts(t *testing.T) {
+	// A failed apply stops wherever it got to.
+	// Engine-manager keeps the new server port and rebinds the proxy, before launching
+	// the snapshot's observed port and not the pre-apply config
+	b := &Broker{codec: NewCodec(&bytes.Buffer{}), engineSettingsLoaded: true,
+		engineSettings: map[string]*engineSettingsRecord{"ollama": {
+			Explicit: true,
+			Previous: settings.Config{ServerPort: 24011, ProxyPort: 24010},
+			Snapshot: settings.Snapshot{
+				Settings:            settings.Config{ServerPort: 24013, ProxyPort: 24012},
+				Phase:               "failed",
+				EffectiveServerPort: 24013,
+				EffectiveProxyPort:  24012,
+			},
+		}},
+	}
+	require.True(t, b.prepareExplicitEngineSettings("ollama"))
+	require.Equal(t, int32(24012), b.ollamaState().startupPort.Load(), "spawn port must follow the observed proxy port")
+	require.Equal(t, int32(24013), b.ollamaState().backendPort.Load(), "backend port must follow the observed server port")
+}
+
+func TestSettingsPrepareExplicit_FailedApplyWithoutObservedPortsSpawnsPrevious(t *testing.T) {
+	// When the apply died before any step was observed the pre-apply config remains the spawn anchor.
+	b := &Broker{codec: NewCodec(&bytes.Buffer{}), engineSettingsLoaded: true,
+		engineSettings: map[string]*engineSettingsRecord{"ollama": {
+			Explicit: true,
+			Previous: settings.Config{ServerPort: 24011, ProxyPort: 24010},
+			Snapshot: settings.Snapshot{
+				Settings: settings.Config{ServerPort: 24013, ProxyPort: 24012},
+				Phase:    "failed",
+			},
+		}},
+	}
+	require.True(t, b.prepareExplicitEngineSettings("ollama"))
+	require.Equal(t, int32(24010), b.ollamaState().startupPort.Load(), "spawn port must fall back to the pre-apply proxy port")
+	require.Equal(t, int32(24011), b.ollamaState().backendPort.Load(), "backend port must fall back to the pre-apply server port")
+}
+
+func TestSettingsApply_ChainedFailuresKeepRollbackAnchor(t *testing.T) {
+	// Re-applying on top of a failed port mapping must not promote the failed state to the rollback anchor.
+	h := newSettingsHarness(t)
+	p := h.request(t)
+	base := p.Settings
+	h.failRebind.Store(true)
+	first, firstRelease := reserveSettingsPort(t)
+	firstRelease()
+	p.Settings.ProxyPort = first
+	_, err := h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	require.Equal(t, "failed", h.b.engineSettings["ollama"].Snapshot.Phase, "first proxy move not recorded as failed")
+	second, secondRelease := reserveSettingsPort(t)
+	secondRelease()
+	p = h.request(t)
+	p.Settings.ProxyPort = second
+	_, err = h.b.applyEngineSettings(context.Background(), p, "")
+	require.NoError(t, err)
+	require.Equal(t, "failed", h.b.engineSettings["ollama"].Snapshot.Phase, "second proxy move not recorded as failed")
+	require.Equal(t, base.ProxyPort, h.b.engineSettings["ollama"].Previous.ProxyPort, "rollback anchor must stay below the failure streak")
+	require.Equal(t, base.ServerPort, h.b.engineSettings["ollama"].Previous.ServerPort, "rollback anchor must stay below the failure streak")
 }
 
 func TestSettings_MigratesLegacyProxyChoiceBeforeManagedDefaults(t *testing.T) {

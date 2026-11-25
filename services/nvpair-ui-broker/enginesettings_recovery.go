@@ -64,13 +64,32 @@ func (b *Broker) explicitEngineSettingsLocked(engine string) (settings.Config, b
 func (b *Broker) prepareExplicitEngineSettings(engine string) bool {
 	b.engineConfigMu.Lock()
 	loadErr := b.loadEngineSettingsLocked()
+	config, ok, phase := settings.Config{}, false, ""
+	var previous settings.Config
+	var observed settings.Snapshot
+	if record := b.engineSettings[engine]; record != nil && record.Explicit {
+		config, ok, phase, previous = record.Snapshot.Settings, true, record.Snapshot.Phase, record.Previous
+		observed = record.Snapshot
+	}
 	b.engineConfigMu.Unlock()
 	if loadErr != nil {
 		return true
 	} // preserve component stores; recovery reports the journal error
-	config, ok := b.explicitEngineSettings(engine)
 	if !ok {
 		return false
+	}
+	if phase == "failed" {
+		pick := func(eff, prev, current int) int {
+			if eff > 0 {
+				return eff
+			}
+			if prev > 0 {
+				return prev
+			}
+			return current
+		}
+		config.ProxyPort = pick(observed.EffectiveProxyPort, previous.ProxyPort, config.ProxyPort)
+		config.ServerPort = pick(observed.EffectiveServerPort, previous.ServerPort, config.ServerPort)
 	}
 	profile, _ := engineProxyProfileFor(engine)
 	state := b.engineProxy(profile)
@@ -129,7 +148,7 @@ func (b *Broker) migrateLegacyEngineSettings() {
 		if proxy := b.settingsProxy(engine); proxy != nil {
 			_, current.EffectiveProxyPort = proxy.Status(engine)
 		}
-		err = b.validateSettingsPortsLocked(ctx, engine, config, current)
+		err = b.validateSettingsPortsLocked(ctx, engine, config, current, false)
 		cancel()
 		if err != nil {
 			continue
