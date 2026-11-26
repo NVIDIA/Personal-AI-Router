@@ -2156,3 +2156,159 @@ func TestDiscovery_FailedAnnouncementUpdateStillAllowsRemovalOfUnavailablePeer(t
 	_, present := f.daemon.dir.get("peer-uuid")
 	assert.False(t, present)
 }
+
+// stalledResponder stands in for mdnsResponder with a shutdown a test
+// controls: Run signals that it has begun its goodbye retraction (RFC 6762
+// §10.1) and stays there until the test closes release, then closes finished
+// as it returns. That is the state the real responder is in while the
+// retraction is being sent — the interval daemon.run must not return ahead
+// of. A test cannot use the real responder here: it sends the retraction in
+// microseconds, so nothing about it could show whether the join was honored
+// or skipped, and this proves the join rather than the send (the sends
+// themselves are pinned in nvpair-shared/mdns's goodbye tests).
+type stalledResponder struct {
+	sendingGoodbye chan struct{} // closed when Run begins the retraction
+	release        chan struct{} // the test closes this to finish it
+	finished       chan struct{} // closed when Run returns
+}
+
+func newStalledResponder() *stalledResponder {
+	return &stalledResponder{
+		sendingGoodbye: make(chan struct{}),
+		release:        make(chan struct{}),
+		finished:       make(chan struct{}),
+	}
+}
+
+// Run stays inside its retraction until released, whatever ctx does, so the
+// test decides when the responder is done rather than relying on a real
+// multicast send to take long enough to notice.
+func (r *stalledResponder) Run(context.Context) error {
+	close(r.sendingGoodbye)
+	<-r.release
+	close(r.finished)
+	return nil
+}
+
+func (r *stalledResponder) UpdateTXT([]string) {}
+
+func (r *stalledResponder) AdvertisedHost() string { return "nvpair-self.local." }
+
+// The two browser stubs below each force one way out of daemon.run's browse
+// loop. The real browser closes events as it stops on ctx.Done(), so a
+// cancelled context leaves both select cases ready at the same instant and Go
+// picks either: a faithful browser could only reproduce that coin flip, not
+// the branch it landed on. Pinning each branch keeps both tests
+// deterministic — one proves the responder is still joined after
+// cancellation, the other after the channel closes. Only the second failed
+// before the wait moved into the deferred cleanup.
+//
+// Neither stub sends anything, so SendFailures reports nothing for the local
+// address ranking to work from — a state these tests never reach anyway.
+
+// neverClosesEventsBrowser stays in its scan until ctx is cancelled and
+// leaves events open, so only ctx.Done() can end the browse loop.
+type neverClosesEventsBrowser struct{}
+
+func (neverClosesEventsBrowser) Run(ctx context.Context, events chan<- DiscoveryEvent) {
+	<-ctx.Done()
+}
+
+func (neverClosesEventsBrowser) SendFailures() map[string]bool { return nil }
+
+// closedEventsBrowser has already stopped: Run closes events and returns
+// right away, so the browse loop ends on that closed channel with ctx still
+// live — the way out that used to skip the responder.
+type closedEventsBrowser struct{}
+
+func (closedEventsBrowser) Run(_ context.Context, events chan<- DiscoveryEvent) {
+	close(events)
+}
+
+func (closedEventsBrowser) SendFailures() map[string]bool { return nil }
+
+// waitUntilSendingGoodbye blocks until the responder is in its retraction, so
+// whatever ends the browse loop happens while the retraction is still in
+// progress — the arrangement that has to hold for the wait to mean anything.
+func waitUntilSendingGoodbye(t *testing.T, responder *stalledResponder) {
+	t.Helper()
+	select {
+	case <-responder.sendingGoodbye:
+	case <-time.After(time.Second):
+		require.FailNow(t, "the responder never began its goodbye retraction")
+	}
+}
+
+// assertStillWaitsForTheResponder checks that the browse loop ending did not
+// skip the responder — daemon.run is still in its join while the retraction
+// is unfinished — and that it comes back once the responder is done. The
+// caller has already applied whatever ends the browse loop.
+func assertStillWaitsForTheResponder(t *testing.T, runDone <-chan struct{}, responder *stalledResponder) {
+	t.Helper()
+	select {
+	case <-runDone:
+		require.FailNow(t, "daemon.run returned while the responder was still sending its goodbye",
+			"the retraction has not left the machine, so process exit could cut it short")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(responder.release)
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "daemon.run never returned after the responder finished its goodbye")
+	}
+}
+
+// TestDaemonRun_DoesNotReturnBeforeTheResponderHasShutDownWhenTheContextIsCancelled
+// covers the way out of the browse loop that goes through ctx.Done(): the
+// join must still be taken, and it must succeed rather than run out its
+// timeout, so the scanner cannot reach process exit with the retraction
+// unsent.
+func TestDaemonRun_DoesNotReturnBeforeTheResponderHasShutDownWhenTheContextIsCancelled(t *testing.T) {
+	responder := newStalledResponder()
+	d := newSelfTestDaemon("self-uuid", "192.0.2.1")
+	d.responder = responder
+	d.browser = neverClosesEventsBrowser{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		d.run(ctx)
+	}()
+	waitUntilSendingGoodbye(t, responder)
+
+	cancel()
+
+	assertStillWaitsForTheResponder(t, runDone, responder)
+}
+
+// TestDaemonRun_DoesNotReturnBeforeTheResponderHasShutDownWhenTheBrowserClosesItsEvents
+// covers the other way out: the browser has closed its events channel, so the
+// select takes that branch with ctx still live. Returning straight from it
+// must not skip the responder's shutdown, because the same retraction is
+// still in progress there.
+func TestDaemonRun_DoesNotReturnBeforeTheResponderHasShutDownWhenTheBrowserClosesItsEvents(t *testing.T) {
+	responder := newStalledResponder()
+	d := newSelfTestDaemon("self-uuid", "192.0.2.1")
+	d.responder = responder
+	d.browser = closedEventsBrowser{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		d.run(ctx)
+	}()
+	waitUntilSendingGoodbye(t, responder)
+
+	// Nothing cancels ctx in this case: the browser has already closed
+	// events, so that closed channel is the only thing that can end the
+	// browse loop.
+
+	assertStillWaitsForTheResponder(t, runDone, responder)
+}

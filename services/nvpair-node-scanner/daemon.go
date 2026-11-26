@@ -31,6 +31,43 @@ import (
 	"nvpair-shared/reach"
 )
 
+// mdnsResponder and discoveryBrowser are the daemon's two mDNS counterparts:
+// the record this node advertises, and the browser watching for everyone
+// else's. They are interfaces only so a test can control when each shuts
+// down — nothing else supplies them, and production always wires
+// mdns.Responder and discovery.Browser, which already satisfy both. Their
+// shutdowns matter together: responder.Run returns only once it has sent its
+// RFC 6762 §10.1 retraction, while the browser closes its events channel as
+// it stops, which is the same instant ctx is cancelled.
+type (
+	// mdnsResponder advertises this node's service record, answering
+	// queries for it until ctx is cancelled, then sends the retraction that
+	// withdraws it before returning.
+	mdnsResponder interface {
+		Run(ctx context.Context) error
+
+		// UpdateTXT swaps the advertised TXT records and re-announces
+		// immediately, so it is safe before or during Run.
+		UpdateTXT(txt []string)
+
+		// AdvertisedHost is the FQDN this node claims as its own host
+		// record — the SRV target and the owner of its A records, trailing
+		// dot included.
+		AdvertisedHost() string
+	}
+
+	// discoveryBrowser scans the service type and forwards each change on
+	// events, which it closes when it stops — which is when ctx is
+	// cancelled. SendFailures reports the interfaces whose multicast sends
+	// could not leave, the evidence localAddresses ranks this host's own
+	// addresses on.
+	discoveryBrowser interface {
+		Run(ctx context.Context, events chan<- DiscoveryEvent)
+
+		SendFailures() map[string]bool
+	}
+)
+
 // daemon owns local registration, candidate discovery, and authenticated peer
 // inventory. It publishes discovery:node-* events for the broker relay, which
 // delivers directory snapshots to service consumers.
@@ -39,8 +76,8 @@ type daemon struct {
 	mesh      *clustertrust.Mesh
 	reg       *registry
 	dir       *directory
-	responder *mdns.Responder
-	browser   *Discovery
+	responder mdnsResponder
+	browser   discoveryBrowser
 	// instance is this node's mDNS instance name (the hostname). It names the
 	// registry-driven self directory entry (publishSelf), which is anchored to
 	// our own identity rather than to hearing our own multicast.
@@ -411,6 +448,28 @@ func (d *daemon) run(ctx context.Context) {
 		// the responder keeps its A records live (both via netmon).
 		go d.watchAddress(ctx)
 	}
+
+	// Common cleanup, deferred so it runs whichever way the browse loop
+	// below ends. Cancelling ctx makes both ctx.Done() and the browser's
+	// closed events channel ready at the same instant, and select takes
+	// either: with this wait written into the ctx.Done() branch, a select
+	// that happened to take the closed channel returned as soon as the
+	// browser stopped, with responder.Run still inside its shutdown. Only
+	// the responder is joined — it returns once the RFC 6762 §10.1 goodbye
+	// has gone out, and Scanner.Run cannot let the process exit before this
+	// returns. The other background loops are not joined: after
+	// cancellation they hold nothing the wire still needs, and joining them
+	// could outlast the responder send for no retraction benefit.
+	defer func() {
+		if d.modelsClients != nil {
+			d.modelsClients.CloseIdle()
+		}
+		if d.nodeInfoClients != nil {
+			d.nodeInfoClients.CloseIdle()
+		}
+		waitForShutdown(responderDone, shutdownJoinTimeout, "_nvpair-node mDNS responder")
+	}()
+
 	// Publish our own directory entry from the local registry BEFORE the browse
 	// loop runs. Self presence is registry-driven, not browse-driven: on Windows
 	// the host frequently does not loop its own multicast back to the browsing
@@ -430,23 +489,12 @@ func (d *daemon) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			if d.modelsClients != nil {
-				d.modelsClients.CloseIdle()
-			}
-			if d.nodeInfoClients != nil {
-				d.nodeInfoClients.CloseIdle()
-			}
-			// responder.Run returns only after its shutdown goodbye has
-			// left the machine, so returning here first would let
-			// Scanner.Run return — and the process exit — with the
-			// retraction still unsent. The other background loops are not
-			// joined: after cancellation they hold nothing the wire still
-			// needs, and joining them could outlast the responder send for
-			// no retraction benefit.
-			waitForShutdown(responderDone, shutdownJoinTimeout, "_nvpair-node mDNS responder")
 			return
 		case ev, ok := <-events:
 			if !ok {
+				// The browser has stopped, which it does as ctx is
+				// cancelled. The deferred cleanup above still joins the
+				// responder, whose goodbye may still be going out.
 				return
 			}
 			d.onBrowse(ev)
