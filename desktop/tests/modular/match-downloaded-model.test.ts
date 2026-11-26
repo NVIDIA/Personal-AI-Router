@@ -44,4 +44,13 @@ describe('downloaded model matching', () => {
         ).toBe(false)
         expect(isHubEntryDownloaded('llama-cpp', entry, [modelItem(id, false)])).toBe(false)
     })
+
+    it('matches a Colibri repository only by its exact id', () => {
+        const id = 'Justvugg/Qwen3-Coder-30B-A3B-colibri-int4'
+        const entry = modelEntry(id)
+
+        expect(isHubEntryDownloaded('colibri', entry, [modelItem(id)])).toBe(true)
+        expect(isHubEntryDownloaded('colibri', entry, [modelItem(`${id}-other`)])).toBe(false)
+        expect(isHubEntryDownloaded('colibri', entry, [modelItem(id, false)])).toBe(false)
+    })
 })

@@ -86,7 +86,7 @@ func (s *controlServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return streamFrame{}, err
 		}
 		if req.Start {
-			if err := s.exec.StartWith(ctx, req.Engine, startOpts{}); err != nil {
+			if err := s.exec.StartAfterInstall(ctx, req.Engine, startOpts{}); err != nil {
 				return streamFrame{}, err
 			}
 		}

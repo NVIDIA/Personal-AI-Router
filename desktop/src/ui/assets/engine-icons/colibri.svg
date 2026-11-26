@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Original hummingbird glyph drawn for PAIR's Colibri engine entry. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <path fill="#2b2f36" d="M4.5 20.6 23.4 25.9 22.7 28.1Z" />
+  <path fill="#3cc6b0" d="M30.5 25.5C33.6 14.2 43.8 6.2 59 4.8 53 11.6 46.6 19.6 38.6 29.8Z" />
+  <path fill="#16956f" d="M22.4 28.6C23.4 38.4 33 46.2 45.8 50.2L51.6 59 50.2 49.6 58.6 52.4 49.4 45.4C44.6 36.6 37.4 28.8 30.4 23.8 27.2 21.6 22.8 24 22.4 28.6Z" />
+  <path fill="#e0455a" d="M23.2 30.4C24.8 34.4 28.6 35.6 32 32.2 28.8 33.2 25.8 32.6 23.2 30.4Z" />
+  <circle fill="#ffffff" cx="27.6" cy="26.2" r="1.7" />
+  <circle fill="#2b2f36" cx="27.9" cy="26.3" r="0.9" />
+</svg>

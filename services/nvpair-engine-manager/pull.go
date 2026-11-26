@@ -140,6 +140,15 @@ func (e *Executor) pullModelStream(ctx context.Context, engine, model string, pa
 		params, _ = json.Marshal(map[string]string{"name": model, "model": model})
 	}
 
+	// A snapshot download writes the store itself: no engine involvement, so
+	// it neither needs the engine running nor goes through the action timeout.
+	if act.HFSnapshot != nil {
+		if model == "" {
+			model = modelFromParams(params)
+		}
+		return e.pullHFSnapshot(ctx, st, engine, model, act)
+	}
+
 	if act.ModelResolution == modelResolutionLMSGet {
 		actionCtx, cancel := context.WithTimeoutCause(ctx, e.actionTimeout, fmt.Errorf("the download did not finish within %s", e.actionTimeout))
 		defer cancel()

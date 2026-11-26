@@ -26,6 +26,7 @@ history.
 | LM Studio routing          | Complete                        | Parallel broker relay and scheduler path                                                                                                                                                                                                 |
 | llama.cpp backend          | Integrated                      | Desktop and TUI expose install, lifecycle, catalog pull, inventory, load/unload, endpoints, routing, and demo traffic                                                                                                                    |
 | vLLM engine                | Integrated (Linux, macOS arm64) | Desktop and TUI expose install, lifecycle, the cached-model list, switching the served model (Load), Hugging Face catalog search and download, endpoints and routing; eject (stops the engine), delete of cached models; no demo traffic |
+| Colibri engine             | Integrated                      | Desktop and TUI expose install, lifecycle, catalog search and whole-repository download, switching the served model (Load, which restarts the engine), delete of downloaded models, endpoints and routing; no eject, no demo traffic     |
 | Local engine lifecycle     | Complete                        | Install, start, stop, uninstall, update, and port configuration                                                                                                                                                                          |
 | Remote engine lifecycle    | Partial                         | Remote install, start, stop, status, and model pull are supported                                                                                                                                                                        |
 | Engine models              | Partial                         | Core list, pull, load, unload, and supported delete actions are wired                                                                                                                                                                    |
@@ -35,7 +36,7 @@ history.
 | Cluster pairing            | Complete                        | PIN pairing, identity, membership, leave, and removal                                                                                                                                                                                    |
 | Cluster transport security | Backend-owned                   | Node-to-node transport security, including the proxies' cluster-mTLS inference ingress, is entirely backend; Personal AI Router implements none                                                                                          |
 | Settings                   | Partial                         | Cluster identity plus per-engine ports and engine arguments, local and remote; inert backend settings are not surfaced                                                                                                                   |
-| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio and llama.cpp catalogs, and searches Hugging Face for llama.cpp                                                                                                  |
+| Model catalog search       | Backend-owned                   | `engine:catalog` serves the locked Ollama list and the cached LM Studio, llama.cpp, vLLM and Colibri catalogs, and searches Hugging Face for llama.cpp, vLLM and Colibri                                                                  |
 
 ## Supervision
 
@@ -149,7 +150,7 @@ LAN-reachable. Each node's proxy exposes two personalities on one listener: a
 loopback-only plaintext path for local clients, and a LAN ingress gated by
 cluster mTLS that forwards trusted-peer requests to the loopback engine. Because
 the engine port is private, discovery advertises the **promoted proxy port** for
-`ol`/`lm`/`lc`/`vl`, and the peer's real engine port is knowable only from
+`ol`/`lm`/`lc`/`vl`/`co`, and the peer's real engine port is knowable only from
 authoritative `engine:remote-get-installed` facts.
 
 Personal AI Router consequences (all reflection, no security implementation):
@@ -331,15 +332,17 @@ restart is entirely backend-owned: PAIR sends the same `deleteModel` command as
 for any other engine and never issues `engine:restart` itself, so the bundled
 `nvpair` terminal UI and a remote peer's deletion get the same behavior.
 
-**The full engine restart is LM Studio only.** Ollama and llama.cpp reflect a
-deletion in-process, so their manifests omit `restart_after` and their capability
-entries omit `restartsOnModelDelete`: no engine bounce and no restart
-confirmation. llama.cpp may stop the selected model while removing its cache
+**The full engine restart is LM Studio only.** Ollama, llama.cpp and Colibri
+reflect a deletion without one (Colibri lists its store from disk), so their
+`delete_model` actions omit `restart_after` and their capability entries omit
+`restartsOnModelDelete`: no engine bounce and no restart confirmation. Colibri's
+`load_model` does restart: it serves one model per process, so switching models
+is a restart onto the new one. llama.cpp may stop the selected model while removing its cache
 entry, but the router and its other models stay up. Those manifest and
 capability facts have to stay in step across Go and TypeScript, which nothing in
 either type system enforces — so
 `tests/modular/delete-model-restart.test.ts` reads the shipped manifests and
-asserts the pair agrees, and `TestBundledManifestsRestartOnlyLMStudio` guards the
+asserts the pair agrees, and `TestBundledManifestsRestartOnlyWhereNeeded` guards the
 same thing from the Go side.
 
 Several model-action timeouts have to be ordered correctly. For a
@@ -669,8 +672,8 @@ model manager says the downloaded models are unavailable instead of claiming
 none are downloaded.
 
 The model catalogue is owned by the backend: `engine:catalog` on
-`nvpair-engine-manager` serves the curated Ollama, LM Studio, and llama.cpp
-lists, and searches Hugging Face for llama.cpp, and both the desktop app and
+`nvpair-engine-manager` serves the curated Ollama, LM Studio, llama.cpp, and
+Colibri lists, and searches Hugging Face for llama.cpp, vLLM, and Colibri, and both the desktop app and
 the terminal interface browse it. Electron only relays the call and maps rows
 for the renderer.
 

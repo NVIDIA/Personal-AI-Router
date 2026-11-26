@@ -55,7 +55,7 @@ Delete all NVIDIA PAIR-owned application data (settings, logs, cluster
 identity, chat history, and PAIR-managed engines).
 
 Does NOT delete model libraries (%USERPROFILE%\.ollama, .llamacpp,
-.lmstudio\models, .cache\huggingface).
+.lmstudio\models, .cache\huggingface, colibri-models).
 Does NOT uninstall the application binary.
 
 Options:
@@ -236,7 +236,7 @@ if (-not $Confirmed) {
     }
     Write-Host ''
     Write-Host 'WARNING: This permanently deletes all NVIDIA PAIR app data.'
-    Write-Host 'Model libraries (%USERPROFILE%\.ollama, .llamacpp, .lmstudio\models, .cache\huggingface) are NOT removed.'
+    Write-Host 'Model libraries (%USERPROFILE%\.ollama, .llamacpp, .lmstudio\models, .cache\huggingface, colibri-models) are NOT removed.'
     Write-Host ''
     Write-Host 'Paths to remove:'
     foreach ($t in $Targets) { Write-Host ("  - {0}" -f $t.Path) }

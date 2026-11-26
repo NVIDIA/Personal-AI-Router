@@ -117,6 +117,8 @@ func (c *backendClient) listModels(ctx context.Context) ([]RegisteredModel, erro
 		models, err = c.listLMStudioModels(ctx)
 	case "llamacpp":
 		models, err = c.listLlamaCPPModels(ctx)
+	case "colibri":
+		models, err = c.listColibriModels(ctx)
 	default:
 		models, err = c.listOllamaModels(ctx)
 	}
@@ -136,6 +138,17 @@ func (c *backendClient) listLlamaCPPModels(ctx context.Context) ([]RegisteredMod
 	data, err := c.request(ctx, http.MethodGet, "/v1/models", nil)
 	if err != nil {
 		return nil, fmt.Errorf("query llama.cpp models: %w", err)
+	}
+	return parseOpenAIModels(data)
+}
+
+// listColibriModels reads Colibri's OpenAI model list. Through the PAIR proxy
+// it is the cluster's Colibri inventory; each server reports the one model it
+// was launched with.
+func (c *backendClient) listColibriModels(ctx context.Context) ([]RegisteredModel, error) {
+	data, err := c.request(ctx, http.MethodGet, "/v1/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("query Colibri models: %w", err)
 	}
 	return parseOpenAIModels(data)
 }
@@ -360,7 +373,7 @@ func (c *backendClient) inferencePath() string {
 }
 
 func (c *backendClient) usesOpenAIProtocol() bool {
-	return c.cfg.Backend == "lmstudio" || c.cfg.Backend == "llamacpp"
+	return c.cfg.Backend == "lmstudio" || c.cfg.Backend == "llamacpp" || c.cfg.Backend == "colibri"
 }
 
 func (c *backendClient) infer(ctx context.Context, model, prompt string) (string, error) {

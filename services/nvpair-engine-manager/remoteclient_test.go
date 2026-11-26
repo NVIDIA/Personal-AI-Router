@@ -167,6 +167,7 @@ func TestRemoteReadinessBudget_CoversEngineStartupAllowance(t *testing.T) {
 	test("Ollama load waits", controlLoadPath, "ollama", true)
 	test("vLLM load waits", controlLoadPath, "vllm", true)
 	test("LM Studio load does not wait", controlLoadPath, "lmstudio", false)
+	test("Colibri load waits", controlLoadPath, "colibri", true)
 	// Cancelling is the peer stopping a live transfer, not answering a
 	// question: it stops the download, waits for that to be confirmed, and
 	// cleans up before writing a header. That can outlast the ordinary

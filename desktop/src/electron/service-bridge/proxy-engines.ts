@@ -10,13 +10,22 @@ import { engineTypeFromManagerName } from '@/shared/utils/engines'
  * separate from the complete engine registry so an engine can be declared
  * before every proxy-state consumer is ready to handle it.
  */
-export type ProxyEngine = Extract<EngineType, 'ollama' | 'lm-studio' | 'llama-cpp' | 'vllm'>
+export type ProxyEngine = Extract<
+    EngineType,
+    'ollama' | 'lm-studio' | 'llama-cpp' | 'vllm' | 'colibri'
+>
 /** A proxy's source name: the engine-manager's name for the engine, plus -proxy. */
 export type ProxyNodeSource = `${(typeof EngineManagerNames)[ProxyEngine]}-proxy`
 
 const PROXY_SOURCE_SUFFIX = '-proxy'
 
-export const PROXY_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio', 'llama-cpp', 'vllm']
+export const PROXY_ENGINES: readonly ProxyEngine[] = [
+    'ollama',
+    'lm-studio',
+    'llama-cpp',
+    'vllm',
+    'colibri'
+]
 
 export const PROXY_NODE_SOURCES: readonly ProxyNodeSource[] =
     PROXY_ENGINES.map(proxySourceForEngine)

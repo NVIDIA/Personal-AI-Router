@@ -5,8 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Engine settings protocol
 
-The broker owns combined settings operations for Ollama, LM Studio, and
-llama.cpp. Each node owns its own configuration. `nodeId` selects a discovered,
+The broker owns combined settings operations for Ollama, LM Studio,
+llama.cpp, vLLM, and Colibri. Each node owns its own configuration. `nodeId` selects a discovered,
 currently pinned peer; omission or the local host ID selects this node. Bulk
 propagation is not part of this API.
 
@@ -16,8 +16,8 @@ propagation is not part of this API.
 | `engine:preview-settings` | `{engine, nodeId?, expectedRevision, settings, resolution?}` | Normalized settings, errors, conflict, restart/rebind summary |
 | `engine:apply-settings` | Preview request plus `requestId` | `{revision, phase}` acknowledgement |
 
-`engine` is `ollama`, `lmstudio`, `llamacpp`, or `vllm`. `settings` contains all three
-fields: `serverPort`, `proxyPort`, `launchText`. llama.cpp additionally exposes
+`engine` is `ollama`, `lmstudio`, `llamacpp`, `vllm`, or `colibri`. `settings`
+contains all three fields: `serverPort`, `proxyPort`, `launchText`. llama.cpp additionally exposes
 `modelSource` (`huggingface` or `modelscope`, default `huggingface`); other engines
 omit it. The selection is persisted and relayed with the rest of the settings.
 Changing it restarts a running llama.cpp router and changes both its catalogue

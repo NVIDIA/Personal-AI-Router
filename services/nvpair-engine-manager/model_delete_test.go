@@ -184,24 +184,27 @@ func TestDeleteModelRestartFailure_FailsTheAction(t *testing.T) {
 	require.False(t, running, "engine reports running after a failed restart")
 }
 
-// TestBundledManifestsRestartOnlyLMStudio guards the blast radius of
+// TestBundledManifests_RestartOnlyWhereNeeded guards the blast radius of
 // restart_after. Restarting interrupts whatever the engine is serving, so it is
-// justified only for an engine that cannot see a deletion any other way. If a
-// new manifest ever needs it, that is a deliberate decision — and it also has to
-// be mirrored in the desktop's EngineCapabilities so the UI still confirms
-// first (see desktop/tests/modular/delete-model-restart.test.ts).
-func TestBundledManifests_RestartOnlyLMStudioAfterModelDeletion(t *testing.T) {
+// justified only where nothing else makes the action's effect visible: LM
+// Studio's delete_model, whose server keeps serving a deleted model until it
+// restarts, and Colibri's load_model, since Colibri serves one model per
+// process and switching models is a restart onto the new one. Any other use is
+// a deliberate decision — and a delete_model one has to be mirrored in the
+// desktop's EngineCapabilities so the UI still confirms first (see
+// desktop/tests/modular/delete-model-restart.test.ts).
+func TestBundledManifests_RestartOnlyWhereNeeded(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadFS(bundledManifests, "manifests"), "LoadFS bundled")
+	allowed := map[string]string{"lmstudio": "delete_model", "colibri": "load_model"}
 	for engine, m := range reg.engines {
 		for name, act := range m.Actions {
-			if !act.RestartAfter {
-				continue
+			if act.RestartAfter {
+				assert.Equal(t, allowed[engine], name, "engine %q action %q declares restart_after; only %v need one", engine, name, allowed)
 			}
-			assert.Equal(t, "lmstudio", engine, "engine (%v, %v)", engine, name)
-			assert.Equal(t, "delete_model", name, "lmstudio action")
 		}
 	}
+	require.True(t, reg.engines["colibri"].Actions["load_model"].RestartAfter, "colibri load_model lost restart_after; a running server would keep its old model")
 	require.True(t, reg.engines["lmstudio"].Actions["delete_model"].RestartAfter, "lmstudio delete_model lost restart_after; a deleted model would keep being served")
 	require.False(t, reg.engines["ollama"].Actions["delete_model"].RestartAfter, "ollama delete_model declares restart_after; Ollama reflects deletions without a bounce")
 }

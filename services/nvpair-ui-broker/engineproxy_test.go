@@ -43,6 +43,7 @@ func TestEngineHealthProbe_UsesEngineSpecificEndpoint(t *testing.T) {
 	test("ollama", "/")
 	test("lmstudio", "/v1/models")
 	test("llamacpp", "/health")
+	test("colibri", "/health")
 }
 
 // proxyport.go and lmstudioport.go restate ports and error-ID prefixes the
@@ -78,6 +79,7 @@ func TestEngineOwnership_AssignsManagedAndExternalListeners(t *testing.T) {
 	test("ollama", adoptedEngine)
 	test("lmstudio", managedEngine)
 	test("llamacpp", managedEngine)
+	test("colibri", managedEngine)
 }
 
 // The two engines' port choreography diverges on exactly one input, and this is

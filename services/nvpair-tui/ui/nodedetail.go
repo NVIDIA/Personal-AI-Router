@@ -1896,9 +1896,9 @@ func (d *nodeDetail) uninstallEngine(engine *engineStatus) tea.Cmd {
 // pullTargetEngine is the engine a download goes into: the one highlighted in
 // the engine pane when it can download, else the only running engine. Most
 // engines download through their running server, so a stopped one is never
-// chosen silently. An engine that downloads without its server (vLLM, into the
-// Hugging Face cache) can be chosen stopped when it is highlighted, as the
-// desktop app allows.
+// chosen silently. An engine that downloads without its server (vLLM into the
+// Hugging Face cache, Colibri into its model store) can be chosen stopped when
+// it is highlighted, as the desktop app allows.
 func (d *nodeDetail) pullTargetEngine() string {
 	if e := d.selectedEngine(); e != nil && (e.Running || e.Installed && pullsWhileStopped[e.Engine]) {
 		return e.Engine

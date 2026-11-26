@@ -171,4 +171,5 @@ export function warmEngineHubs(): void {
     void getEngineHubModels('lm-studio')
     void getEngineHubModels('llama-cpp')
     void getEngineHubModels('vllm')
+    void getEngineHubModels('colibri')
 }

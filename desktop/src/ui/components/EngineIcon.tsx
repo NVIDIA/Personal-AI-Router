@@ -8,12 +8,14 @@ import ollamaIcon from '@/ui/assets/engine-icons/ollama.png?inline'
 import lmStudioIcon from '@/ui/assets/engine-icons/lm-studio.png?inline'
 import llamaCppIcon from '@/ui/assets/engine-icons/llama-cpp.svg?inline'
 import vllmIcon from '@/ui/assets/engine-icons/vllm.svg?inline'
+import colibriIcon from '@/ui/assets/engine-icons/colibri.svg?inline'
 
 const engineIcons: Record<EngineType, string> = {
     ollama: ollamaIcon,
     'lm-studio': lmStudioIcon,
     'llama-cpp': llamaCppIcon,
-    vllm: vllmIcon
+    vllm: vllmIcon,
+    colibri: colibriIcon
 }
 
 export default function EngineIcon({ type, size = 32 }: { type: EngineType; size?: number }) {

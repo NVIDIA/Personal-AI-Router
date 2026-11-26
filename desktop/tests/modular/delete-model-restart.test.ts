@@ -28,7 +28,8 @@ const MANIFEST_DIR = path.resolve(process.cwd(), '../services/nvpair-engine-mana
 const ENGINE_TYPE_BY_MANIFEST_ID: Record<string, EngineType> = {
     ollama: 'ollama',
     lmstudio: 'lm-studio',
-    llamacpp: 'llama-cpp'
+    llamacpp: 'llama-cpp',
+    colibri: 'colibri'
 }
 
 interface ManifestAction {
@@ -48,13 +49,25 @@ function readManifests(): Manifest[] {
 }
 
 describe('delete-model restart is scoped to LM Studio', () => {
-    it('only LM Studio declares restart_after, and only on delete_model', () => {
-        const declaring = readManifests().flatMap(m =>
-            Object.entries(m.actions ?? {})
-                .filter(([, action]) => action.restart_after === true)
-                .map(([name]) => `${m.engine}.${name}`)
-        )
-        expect(declaring).toEqual(['lmstudio.delete_model'])
+    // Colibri's load_model also restarts — it serves one model per process, so
+    // switching models is a restart — but no delete does besides LM Studio's.
+    it('only LM Studio restarts on delete_model, and only Colibri on load_model', () => {
+        const declaring = readManifests()
+            .flatMap(m =>
+                Object.entries(m.actions ?? {})
+                    .filter(([, action]) => action.restart_after === true)
+                    .map(([name]) => `${m.engine}.${name}`)
+            )
+            .sort()
+        expect(declaring).toEqual(['colibri.load_model', 'lmstudio.delete_model'])
+    })
+
+    it('Colibri deletes a model directory without restarting', () => {
+        const colibri = readManifests().find(m => m.engine === 'colibri')
+        expect(colibri?.actions?.delete_model).toBeDefined()
+        expect(colibri?.actions?.delete_model?.restart_after).toBeUndefined()
+        expect(EngineCapabilities.colibri.restartsOnModelDelete).toBeFalsy()
+        expect(EngineCapabilities.colibri.hasDeleteModel).toBe(true)
     })
 
     it('Ollama deletes without a restart and therefore without a confirmation', () => {

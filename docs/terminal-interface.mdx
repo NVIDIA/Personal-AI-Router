@@ -349,25 +349,31 @@ press `r` to try again.
 
 llama.cpp's catalog opens on popular GGUF models from a few well-known
 publishers, but it can download any GGUF model on Hugging Face, so there `/`
-searches all of Hugging Face instead of filtering the list. Press `c` to go back
-to the starting list.
+searches all of Hugging Face instead of filtering the list. Colibri's catalog
+starts with the models of Colibri's own setup list, such as DeepSeek V4 Flash
+and Kimi K3, followed by every public Hugging Face repository tagged
+`colibri`. `/` searches within that tag and that list. Press `c` to go back to
+the starting list.
 
 Press `n` instead if you already know exactly what you want and would rather type
 it. Each engine names models its own way: an Ollama tag such as `llama3.2`, a
 Hugging Face repository for LM Studio, a repository with its quantization
-for llama.cpp, such as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`, and a Hugging Face
-repository for vLLM, such as `Qwen/Qwen3.5-4B`. Either way, progress appears on
-the status line. Downloading needs a running engine, except with vLLM, which
-downloads into the Hugging Face cache without its server: highlight it in the
-Engines pane to download into it while it is stopped.
+for llama.cpp, such as `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M`, a Hugging Face
+repository for vLLM, such as `Qwen/Qwen3.5-4B`, and a whole repository for
+Colibri, such as `Justvugg/Qwen3-Coder-30B-A3B-colibri-int4`. Either way,
+progress appears on the status line. Downloading needs a running engine, except
+with vLLM and Colibri, which download into their model store without their
+server: highlight one of them in the Engines pane to download into it while it
+is stopped. Colibri has no eject: it serves one model at a time, and loading
+another restarts it.
 
 In the Models pane, while a download is in progress, `c` cancels it. It picks
 the newest download into the engine highlighted in the Engines pane, or, when
 that engine has none, the newest on the machine, and the prompt names the model
 and engine it will stop: `y` stops it, and any other key keeps it downloading.
 Cancelling an Ollama or LM Studio download can also delete the partial files it
-wrote, which is why it asks first; llama.cpp and vLLM keep them for the next
-download to resume.
+wrote, which is why it asks first; llama.cpp, vLLM, and Colibri keep them for
+the next download to resume.
 
 Restart and uninstall need PAIR to own the engine process, so they only apply
 to the machine you are sitting on. They are hidden on a peer rather than

@@ -12,7 +12,7 @@ node offers and where to reach them.
 
 What a discovered node can actually serve is a separate question, answered after
 discovery. A node may be running [Ollama](https://ollama.com/), LM Studio,
-llama.cpp, vLLM, any combination, or none, and its model inventory is fetched over
+llama.cpp, vLLM, [Colibri](https://github.com/JustVugg/colibri), any combination, or none, and its model inventory is fetched over
 HTTP from its engine-manager rather than crammed into mDNS TXT records, which
 are too small to carry it.
 
@@ -36,6 +36,14 @@ occupied. The desktop and TUI expose each engine's managed lifecycle and
 inventory, plus llama.cpp's downloads and load/unload actions; vLLM serves one
 model per process, so loading another downloaded model restarts it on that model. `--proxy-engines` can still restrict the
 facades a standalone broker or TUI starts.
+
+The Colibri facade is enabled by default too. It exposes OpenAI- and
+Anthropic-compatible traffic on `http://localhost:8002` while the managed
+`coli serve` runs on `8003` — its server defaults to `8000`, which vLLM's facade
+already claims. Colibri serves one model per process, from
+`~/colibri-models`: downloads are whole Hugging Face repositories tagged
+`colibri`, and loading a model restarts the server onto it. Its launcher needs
+Python 3.10 or newer.
 
 PAIR ships a graphical UI alongside these services. The UI launches
 **`nvpair-ui-broker`** from the same directory; the broker orchestrates the
@@ -72,7 +80,7 @@ configuration.
 
 The broker feeds every accepted local or peer workload transition plus compact
 GPU telemetry to the scheduler. Queued and running work is counted by destination
-node across Ollama, LM Studio, llama.cpp, and vLLM together. Fresh maximum-GPU
+node across Ollama, LM Studio, llama.cpp, vLLM, and Colibri together. Fresh maximum-GPU
 utilization is smoothed into pressure 0–3; missing or stale telemetry is
 neutral. Rankings use `pending + gpuPressure`, and each facade adds local
 reservations before choosing, so bursts spread without waiting for workload

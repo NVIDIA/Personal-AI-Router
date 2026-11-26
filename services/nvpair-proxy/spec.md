@@ -116,7 +116,7 @@ Between scheduler snapshots a facade takes short-lived **reservations** for work
 it has dispatched but that the scheduler has not yet observed. Those live in the
 process, and every facade shares them. If each engine had its own proxy
 process, none could see the others' reservations, so simultaneous bursts across
-Ollama, LM Studio, llama.cpp, and vLLM could select the same node, each incorrectly
+Ollama, LM Studio, llama.cpp, vLLM, and Colibri could select the same node, each incorrectly
 believing it was idle.
 Sharing the map is the reason the engines share a process.
 
@@ -171,7 +171,7 @@ For a model-bearing inference request:
 
 1. Filter a request-local discovery snapshot to nodes whose per-engine inventory
    advertises the requested model. Ollama normalizes the implicit `:latest` tag;
-   LM Studio, llama.cpp, and vLLM ids match exactly. An empty owner set returns a local
+   LM Studio, llama.cpp, vLLM and Colibri ids match exactly. An empty owner set returns a local
    `502` without contacting an engine.
 2. Order the eligible owners: explicit `node/select` pin, then the scheduler's
    priority list, then deterministic default ordering.
@@ -686,12 +686,15 @@ untouched, the primary listener stays up, and a warning is reported.
 
 ## 8. Ports
 
-| | Ollama | LM Studio | llama.cpp | vLLM |
-| --- | --- | --- | --- | --- |
-| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 |
-| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 |
-| Standalone port, when `port` is omitted | 11435 | 1234 | 8080 | 8000 |
-| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` |
+| | Ollama | LM Studio | llama.cpp | vLLM | Colibri |
+| --- | --- | --- | --- | --- | --- |
+| Engine's own client-facing port | 11434 | 1234 | 8080 | 8000 | 8000 |
+| Where PAIR relocates the engine | 11435 | 1235 | 8081 | 8001 | 8003 |
+| Standalone port, when `port` is omitted | 11435 | 1234 | 8080 | 8000 | 8002 |
+| Persisted-port file | `proxy-port.json` | `lmstudio-proxy-port.json` | `llamacpp-proxy-port.json` | `vllm-proxy-port.json` | `colibri-proxy-port.json` |
+
+Colibri's server defaults to `8000` like vLLM's, and vLLM's facade claims it, so
+Colibri's facade and engine take the next free pair.
 
 A port chosen at runtime via `set-port` is persisted per engine and restored
 when that facade is enabled, taking precedence over the requested port, so the

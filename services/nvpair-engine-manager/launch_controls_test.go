@@ -112,7 +112,7 @@ func TestBundledLlamaCPP_DisablesCORSByDefault(t *testing.T) {
 func TestBundledManifests_DeclareReviewedNetworkingControls(t *testing.T) {
 	reg := loadWithOverrides(t, t.TempDir())
 	// Adding a bundled engine requires an explicit networking review and cases.
-	wantEngines := []string{"llamacpp", "lmstudio", "ollama", "vllm"}
+	wantEngines := []string{"colibri", "llamacpp", "lmstudio", "ollama", "vllm"}
 	names := reg.Names()
 	slices.Sort(names)
 	assert.Equal(t, wantEngines, names, "review networking controls for every bundled engine")
@@ -135,6 +135,14 @@ func TestBundledManifests_DeclareReviewedNetworkingControls(t *testing.T) {
 					require.Equal(t, []LaunchControl{{Value: "{server.host}", Flags: []string{"--host"}}, {Value: "{server.port}", Flags: []string{"--port"}}, {Value: "{cors.origins}", Flags: []string{"--cors-origins"}}}, policy.Controls, "incomplete llama.cpp controls")
 					valid = []string{"--host 127.0.0.1 --port 23456", "--host=127.0.0.1 --port=23456", "--port 23456 --cors-origins https://example.test"}
 					invalid = []string{"--host 0.0.0.0", "--host=::", "--port 0", "--port 65536", "--port", "--cors-origins=*", "--port 23456 --port 23457", "-- --host 0.0.0.0"}
+				case "colibri":
+					// Colibri's --cors-origin takes one origin per flag, which the
+					// comma-separated cors.origins field cannot express, so it has
+					// no CORS control and its defaults stay in force.
+					require.Equal(t, []string{"serve"}, policy.FixedArgs, "colibri does not start its server subcommand")
+					require.Equal(t, []LaunchControl{{Value: "{server.host}", Flags: []string{"--host"}}, {Value: "{server.port}", Flags: []string{"--port"}}}, policy.Controls, "incomplete Colibri controls")
+					valid = []string{"--host 127.0.0.1 --port 23456", "--host=127.0.0.1 --port=23456", "--port 23456 --kv-slots 2"}
+					invalid = []string{"--host 0.0.0.0", "--host=::", "--port 0", "--port 65536", "--port", "--port 23456 --port 23457", "-- --host 0.0.0.0"}
 				case "vllm":
 					require.Equal(t, []string{"serve"}, policy.FixedArgs, "vLLM startup subcommand is not fixed")
 					require.Equal(t, []LaunchControl{{Value: "{server.host}", Flags: []string{"--host"}}, {Value: "{server.port}", Flags: []string{"--port"}}}, policy.Controls, "incomplete vLLM controls")

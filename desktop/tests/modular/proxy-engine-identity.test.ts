@@ -19,17 +19,19 @@ import { engineManagerName } from '@/shared/utils/engines'
 
 describe('proxy engine identity', () => {
     it('declares the complete proxy set in stable order', () => {
-        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm'])
+        expect(PROXY_ENGINES).toEqual(['ollama', 'lm-studio', 'llama-cpp', 'vllm', 'colibri'])
         expect(PROXY_NODE_SOURCES).toEqual([
             'ollama-proxy',
             'lmstudio-proxy',
             'llamacpp-proxy',
-            'vllm-proxy'
+            'vllm-proxy',
+            'colibri-proxy'
         ])
         expect(isProxyEngine('ollama')).toBe(true)
         expect(isProxyEngine('lm-studio')).toBe(true)
         expect(isProxyEngine('llama-cpp')).toBe(true)
         expect(isProxyEngine('vllm')).toBe(true)
+        expect(isProxyEngine('colibri')).toBe(true)
     })
 
     it('round-trips engine, manager, and relay source identities', () => {
@@ -42,6 +44,7 @@ describe('proxy engine identity', () => {
         expect(proxyEngineFromManagerId('other')).toBeNull()
         expect(proxyEngineFromManagerId('llamacpp')).toBe('llama-cpp')
         expect(proxyEngineFromManagerId('vllm')).toBe('vllm')
+        expect(proxyEngineFromManagerId('colibri')).toBe('colibri')
     })
 
     it('routes each proxy notification to the mapped engine', () => {
@@ -142,7 +145,9 @@ describe('proxy engine identity', () => {
                 enginePort: 8081,
                 proxyPort: 8080
             }),
-            expect.objectContaining({ engineType: 'vllm', processStatus: 'not-installed' })
+            expect.objectContaining({ engineType: 'vllm', processStatus: 'not-installed' }),
+            // Colibri is absent from the peer's listing, so it is unsupported there.
+            expect.objectContaining({ engineType: 'colibri', processStatus: 'unsupported' })
         ])
 
         const llamaModels = state

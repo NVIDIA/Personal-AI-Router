@@ -224,8 +224,8 @@ The cancels, the remote pull, and `engine:pull-progress` carry the model in a
 top-level `model` field, so every frame lands on the row it belongs to.
 `engine:action{pull_model}` carries it in the engine's own `params` instead:
 `name` for Ollama, since those params become its `/api/pull` request body, and
-`model` for LM Studio, llama.cpp, and vLLM. The engine manager reads either
-spelling.
+`model` for LM Studio, llama.cpp, vLLM, and Colibri. The engine manager reads
+either spelling.
 
 Cancellation is a request, not a result. The engine manager stops the transfer
 and lets its cleanup settle before answering, and the row clears when the
@@ -286,7 +286,8 @@ not select or pin proxy routes.
 An NVPAIR-launched engine binds to loopback and is never directly LAN-reachable.
 Peers reach it only through the node's proxy over a cluster-mTLS ingress, so
 discovery advertises the promoted proxy port for `ol`/`lm` rather than the
-engine's private port; llama.cpp uses the additional `lc` key and vLLM the `vl` key. Transport
+engine's private port; llama.cpp uses the additional `lc` key, vLLM the `vl`
+key, and Colibri the `co` key. Transport
 security is backend-owned; Electron only
 reflects the advertised proxy port and reads a remote engine's real port from
 `engine:remote-get-installed` facts.
@@ -319,6 +320,19 @@ same method, so both front ends browse one implementation.
   llama.cpp the desktop reads that peer's saved source with
   `engine:get-settings` before each browse or search and passes it, as the
   terminal interface does, so the list matches what the peer will download;
+- vLLM models come from the most-downloaded safetensors repositories of each
+  approved publisher (`Qwen`, `nvidia`, `mistralai`, `microsoft`, and
+  `ibm-granite`) in the text-generation and image-text-to-text pipelines,
+  fetched, cached, and searched the same way. Each pull ID is the plain
+  `owner/repository` id, which the engine manager's `hf_pull` action brings into
+  the Hugging Face hub cache under `~/.cache/huggingface`;
+- Colibri models come from the list in Colibri's engine manifest (Colibri's
+  own setup list, vendors' original checkpoints such as DeepSeek V4 Flash and
+  Kimi K3 among them), then every public Hugging Face repository tagged
+  `colibri` that has a root `config.json`, fetched and cached the same way and
+  searchable within the tag. Each pull ID is the `owner/repository` id, which
+  the engine manager's `hf_snapshot` action downloads whole into
+  `~/colibri-models`;
 - the request takes an optional `platform` and `arch`, marks Apple-only (MLX)
   rows, keeps them only for Apple Silicon, and echoes the target it filtered
   for, so a client driving a peer is not offered models that peer cannot
@@ -460,7 +474,8 @@ deletes finish. Unpackaged (`electron-vite dev`) builds omit relaunch and the UI
 tells the developer to run `npm start` again — quitting Electron tears down the Vite
 renderer server, so auto-relaunch would come up with nothing to load.
 
-The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`, `~/.cache/huggingface`) and
+The engines' model stores (`~/.ollama`, `~/.llamacpp`, `~/.lmstudio/models`,
+`~/.cache/huggingface`, `~/colibri-models`) and
 the application install tree are never removed. The reset does uninstall the
 engines PAIR installed, through `engine:uninstall-managed` while the broker is
 still running, so an engine a vendor installer placed in the user's home is

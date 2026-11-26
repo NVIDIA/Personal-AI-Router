@@ -99,7 +99,10 @@ func launchForState(st *engineState, port int, allowLanBind bool) (launchCommand
 	rt := st.plat.Runtime
 	bin := st.binPath
 	st.mu.Unlock()
-	return resolveSettingsLaunch(rt, bin, port, st.pathVars(), allowLanBind)
+	// A missing launch model must not hide the settings: the display resolves
+	// {model} empty, and only a start refuses.
+	vars, _ := st.launchVars(rt, effectiveBind(rt.Bind, ""), port)
+	return resolveSettingsLaunch(rt, bin, port, vars, allowLanBind)
 }
 
 // resolveSettingsLaunch uses captured values so a status update cannot change
@@ -128,7 +131,11 @@ func (e *Executor) launchStateLocked(engine string, st *engineState) settings.La
 	rt, bin := st.plat.Runtime, st.binPath
 	result := settings.LaunchState{Engine: engine, ServerPort: rt.Port, EffectivePort: st.port, Running: st.running, Adopted: st.adopted, Format: launchTextFormat}
 	st.mu.Unlock()
-	command, err := resolveSettingsLaunch(rt, bin, result.ServerPort, st.pathVars(), false)
+	// launchVars, not pathVars: a single-model engine templates {model} in its
+	// launch, and the displayed command must be the one a start would run.
+	// The preview never starts anything, so it keeps the loopback-only default.
+	vars, _ := st.launchVars(rt, effectiveBind(rt.Bind, ""), result.ServerPort)
+	command, err := resolveSettingsLaunch(rt, bin, result.ServerPort, vars, false)
 	if engine == "llamacpp" {
 		result.ModelSource = modelSource(st.plat.Runtime)
 	}
@@ -281,9 +288,10 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 		return fail("Cannot resolve the engine executable.")
 	}
 	host := effectiveBind(rt.Bind, "")
-	vars := st.pathVars()
-	vars["host"] = host
-	vars["port"] = strconv.Itoa(request.Settings.ServerPort)
+	// The same placeholders as a launch, {model} included, so a manifest
+	// environment default that names the model is recognised as a default and
+	// not pinned as a literal user value.
+	vars, _ := st.launchVars(rt, host, request.Settings.ServerPort)
 	vars["bin"] = base.Bin
 	vars["cli"] = expandPath(rt.CLI)
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
@@ -446,7 +454,7 @@ func (e *Executor) configureLaunchLocked(ctx context.Context, st *engineState, p
 		}
 	}
 	if changed || !reflect.DeepEqual(st.plat.Runtime.LaunchArgs, preview.Args) || !reflect.DeepEqual(st.plat.Runtime.LaunchEnv, preview.Env) {
-		if err := e.persistRuntimeConfig(p.Engine, preview.Settings.ServerPort, &preview.Args, &preview.Env, &preview.Settings.ModelSource); err != nil {
+		if err := e.persistRuntimeConfig(p.Engine, preview.Settings.ServerPort, &preview.Args, &preview.Env, nil, &preview.Settings.ModelSource); err != nil {
 			return e.launchStateLocked(p.Engine, st), err
 		}
 	}

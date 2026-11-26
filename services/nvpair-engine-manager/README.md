@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # nvpair-engine-manager
 
 A config-driven control plane for local inference engines. The bundled
-manifests support Ollama, LM Studio, llama.cpp, and vLLM. It manages everything about
+manifests support Ollama, LM Studio, llama.cpp, vLLM, and Colibri. It manages everything about
 an engine **except serving inference**: detect, user-mode install,
 start/stop/restart, health, and config-declared actions. Adding an engine
 is a JSON manifest, not code.
@@ -54,6 +54,56 @@ not enlarge the PAIR installer. llama.cpp keeps its `auto` GPU-layer policy:
 supported NVIDIA/Metal devices can accelerate, while the dynamic CPU backend
 remains the fallback. Hardware acceptance, not `/health` alone, is required to
 claim GPU activation.
+
+### Colibri backend checkpoint
+
+The `colibri` manifest installs [Colibri](https://github.com/JustVugg/colibri)
+v2.1.0, a mixture-of-experts engine that streams expert weights from disk, from
+its checksum-pinned release archives: Windows x64 (the base archive with the
+CUDA archive unpacked over it), Linux x64 (Vulkan) and Apple silicon (Metal,
+`COLI_METAL=1`). Colibri's launcher is a Python script, so the install first
+checks for Python 3.10 or newer and fails with that message when it is missing.
+Other platforms have no release and report Colibri as unavailable.
+
+Colibri serves **one model per process**. The manifest runs
+`coli serve --host {host} --port {port}` on loopback port `8003` (its stock
+server defaults to `8000`, which vLLM's facade already claims, so Colibri's
+facade takes the next free pair) and names the
+model through `COLI_MODEL={models_dir}/{model}` and `COLI_MODEL_ID={model}`.
+`{model}` is the persisted launch model (`runtime.model`), or the first model in
+the store when none is saved or it was deleted; with no model downloaded a start
+is refused with "no model is downloaded". Readiness requires `/health` to
+answer `{"status":"ok"}`, which Colibri sends only once the model has loaded,
+so the ready budget is 600 seconds.
+
+Models are Hugging Face repositories tagged `colibri`, plus the eleven text
+models of Colibri v2.1.0's own `coli setup` list, which the manifest's
+`catalog` names by repository. Several of those are vendors' original
+checkpoints that carry no tag, among them DeepSeek V4 Flash, MiMo-V2.6 and
+Kimi K3. Models are stored as `~/colibri-models/<owner>/<repository>`. Models
+that Colibri's own `coli setup` placed one level down, such as
+`~/colibri-models/qwen36-35b`, are models too:
+
+- `list_models` is a `scan_dir` of that store (directories one or two levels
+  down holding `config.json`), so the inventory is the files on disk.
+- `pull_model` is an `hf_snapshot` download of the whole repository. It refuses
+  private, gated and non-model repositories, checks free disk space, resumes
+  interrupted files with HTTP ranges, and moves the model into place only when
+  every file has arrived. It does not need the engine running. The first model
+  downloaded becomes the launch model. A listed repository follows its entry's
+  rules: Qwen3.8-Flash-Next is pinned to a commit, MiMo skips the files its
+  engine never loads, and Kimi K3 runs Colibri's `tools/k3_tokenizer.py` to
+  write the `tokenizer.json` its engine reads, which needs Colibri installed.
+- Only models Colibri v2.1.0 can run are offered or downloaded: the manifest's
+  `model_types` lists the `config.json` `model_type` values of its chat
+  engines, and a tagged repository naming another (Hy3, Laguna, MiniMax,
+  Nemotron) is neither listed nor pulled. Containers built for ports of
+  Colibri, SpeedyColibri and peng, are left out too.
+- `load_model` is a `launch_model` that saves the model as `runtime.model` and,
+  through `restart_after`, restarts a running server onto it. There is no
+  `unload_model`.
+- `delete_model` removes one model directory (one holding `config.json`),
+  never the store or an owner folder.
 
 ### vLLM
 
@@ -295,7 +345,6 @@ preserves it, including waiting for a choice. A failed first Load restores the
 previous model-free enabled state. Eject retains its existing behavior of stopping
 vLLM and releasing its model memory. This change adds no inactivity unload policy.
 
-
 ## Communication
 
 Bidirectional newline-delimited JSON-RPC 2.0 — the same conventions as
@@ -326,7 +375,7 @@ Requests (caller → service):
 | `engine:cancel-pull` | `{ engine, model }` | `null`, once the transfer has stopped **and** its cleanup has settled — so a UI can hold "Canceling" until the backend is genuinely done. See "Cancelling a pull" below |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
-| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Ollama, LM Studio, and vLLM have fixed sources; llama.cpp uses its selected source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. vLLM serves Hugging Face repos by their repo id: its browse list is the open, text-generating safetensors repos of `Qwen`, `nvidia`, `mistralai`, `microsoft` and `ibm-granite` (both `text-generation` and `image-text-to-text`), with parameter count and size, and, like llama.cpp, a `query` searches all of Hugging Face under the same rules. llama.cpp downloads any GGUF repo as `repo:quantization`; its Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. Both llama.cpp and vLLM are `searchable`. llama.cpp queries use its selected Hugging Face or ModelScope source; vLLM queries use Hugging Face. Each query is cached separately (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
+| `engine:catalog` | `{ engine, platform?, arch?, query?, modelSource? }` | `{ models: [{ id, name, author, url, size?, downloads, likes, updatedAt, tags, family?, parameterSize?, appleOnly? }], source, platform?, arch?, fetchedAt?, searchable?, query? }` — the models an engine can **download**, as opposed to `engine:models`, which reports what is already installed. Ollama, LM Studio, vLLM, and Colibri have fixed sources; llama.cpp uses its selected source. Ollama's has no public API, so it is a locked list compiled into this binary from `catalog/ollama-models.json`, regenerated on demand by a developer (`npm run scrape:ollama-models` in `desktop/`) who reviews the diff; serving it needs no network. LM Studio's catalog *is* the `lmstudio-community` Hugging Face org, whose repo ids are exactly what `lms get` accepts, so it is fetched live and cached for six hours, with concurrent callers coalesced onto one request, a failed attempt — with or without a list to fall back on — followed by a backoff before the next. vLLM serves Hugging Face repos by their repo id: its browse list is the open, text-generating safetensors repos of `Qwen`, `nvidia`, `mistralai`, `microsoft` and `ibm-granite` (both `text-generation` and `image-text-to-text`), with parameter count and size, and, like llama.cpp, a `query` searches all of Hugging Face under the same rules. llama.cpp downloads any GGUF repo as `repo:quantization`; its Hugging Face browse list is the GGUF repos of `ggml-org`, `bartowski`, and `unsloth`, fetched and cached the same way, keeping only open, text-generating repos that ship a `Q4_K_M` file, each offered as `repo:Q4_K_M`. Colibri's catalog is every open Hugging Face repository tagged `colibri` that has a root `config.json` (the speedy-colibri fork's nvfp4/mxfp4 builds are left out, as is any repository whose pipeline is not text generation), most downloaded first, each offered as its `owner/repo` id, which `hf_snapshot` downloads whole. llama.cpp, vLLM and Colibri are `searchable`; Colibri searches within its tag. llama.cpp queries use its selected Hugging Face or ModelScope source; vLLM and Colibri queries use Hugging Face. Each query is cached separately (the 20 most recently used are kept), and the reply echoes it. A query longer than 100 characters is refused rather than shortened, since a shortened one searches for something the operator did not type. Other sources ignore a query and return their whole list for the client to filter. `platform` and `arch` are the GOOS and GOARCH the models will be **installed on**, which is not always this host — a client driving a peer should name that peer. Omitting both means this host; naming a platform without an arch leaves the arch unknown rather than borrowing this host's. MLX quantizations only install on Apple Silicon, so they are marked `appleOnly` and kept only for a `darwin`/`arm64` target — an Intel Mac does not get them; the reply echoes the `platform` and `arch` it filtered for. `name` is pull-ready: it can be handed to `pull_model` verbatim. An engine with no curated source is an error, not an empty list. The Ollama reply is a single multi-megabyte frame, so every hop on its path must allow `jsonrpc.WorkerFrameBytes`. |
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] }, downloadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. For an engine with `advertised_models: "loaded"`, `modelsByEngine` holds only the served model's name, which is what a request may be routed to, and `downloadedByEngine` holds its `list_models` inventory, read whenever it is installed, running or not, so a model manager keeps its rows after an Eject. Its `loadedByEngine` names the served model by its `--model` (the `root` of vLLM's `/v1/models`), not a `--served-model-name` alias, so it matches the inventory, and is `[]` while it is stopped. A missing `downloadedByEngine` key means the inventory was not read. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |

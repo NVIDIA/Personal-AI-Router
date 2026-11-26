@@ -13,6 +13,11 @@ export interface EngineHubConfig {
     label: string
     /** Public catalog URL that returns a JSON model list. */
     url: string
+    /**
+     * When true, the engine's catalog answers a search of its upstream, so the
+     * hub sends Enter/Search as a query instead of only filtering the list.
+     */
+    searchable?: boolean
 }
 
 export interface EngineCaps {

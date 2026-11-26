@@ -51,6 +51,11 @@ export const DEMO_REQUEST_TIMEOUT_SECONDS = 120
  * demo: requests enter PAIR's router and are placed by it. Hitting an engine's
  * own backend port would bypass routing entirely, which
  * `proxy-inference-routing.mdc` prohibits.
+ *
+ * Colibri is deliberately absent. It serves one model per process from disk,
+ * with a single conversation slot by default, so the demo's burst of
+ * concurrent agents would queue behind it and time out rather than show
+ * routing at work.
  */
 export const DEMO_ENGINE_PROBES: readonly {
     backend: DispatcherBackend

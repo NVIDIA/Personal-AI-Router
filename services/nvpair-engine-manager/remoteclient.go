@@ -67,10 +67,11 @@ func waitsForEngineReadiness(path, engine string) bool {
 	// cancel that is succeeding as failed, and the row rolls back to
 	// "Downloading" under a transfer that is stopping.
 	//
-	// vLLM's load_model restarts the engine on the new model and replies once
-	// it is ready.
+	// load_model does the same wait for the engines that switch models by
+	// restarting: vLLM reloads on the new launch argument, Colibri comes up on
+	// the model directory it now serves.
 	if path == controlLoadPath {
-		return engine == "ollama" || engine == "vllm"
+		return engine == "ollama" || engine == "vllm" || engine == "colibri"
 	}
 	return path == controlStartPath || path == controlDeletePath || path == controlCancelPullPath
 }

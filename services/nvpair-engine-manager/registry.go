@@ -52,6 +52,22 @@ var allowedPlaceholders = map[string]bool{
 // hf_pull action, whose files must be the ones the engine reads.
 const hfHubCachePlaceholder = "hf_hub_cache"
 
+// launchPlaceholders extends allowedPlaceholders with {model}, the launch
+// model a single-model engine serves. It is accepted only where the runner
+// resolves it itself: runtime args and env, and the paths of the launch_model
+// and hf_snapshot actions. It is deliberately not in allowedPlaceholders,
+// because cmd and remove_path actions drop any caller param named after an
+// allowed placeholder — adding "model" there would strip LM Studio's
+// `lms get {model}` of its argument.
+var launchPlaceholders = func() map[string]bool {
+	out := make(map[string]bool, len(allowedPlaceholders)+1)
+	for name := range allowedPlaceholders {
+		out[name] = true
+	}
+	out["model"] = true
+	return out
+}()
+
 var placeholderRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 
 // resultFieldNameRe matches one element field name, such as "root".
@@ -82,6 +98,12 @@ type Manifest struct {
 	// can list many models it has on disk but only answer for the one it is
 	// running, and the proxy sends a request to any node advertising its model.
 	AdvertisedModels string `json:"advertised_models,omitempty"`
+	// Catalog lists models by repository, for an engine whose models are
+	// downloaded with hf_snapshot (manifestcatalog.go).
+	Catalog []CatalogEntry `json:"catalog,omitempty"`
+	// ModelTypes are the root config.json model_type values the engine runs,
+	// for an engine that picks its code by model_type (manifestcatalog.go).
+	ModelTypes []string `json:"model_types,omitempty"`
 }
 
 // Platform is the per-`<goos>/<goarch>` block. Variance lives here
@@ -210,6 +232,12 @@ type Runtime struct {
 	// Bind is the default listener address, used as the value of {host}.
 	// Empty defaults to loopback; a per-call bind can override it.
 	Bind string `json:"bind,omitempty"`
+	// Model is the persisted launch model of an engine that serves one model
+	// per process, available to runtime args and env as {model}. The
+	// launch_model action writes it to the per-user override; a manifest never
+	// sets it. When it is empty or no longer on disk, the first model found in
+	// the store is served instead (see engineState.launchModel).
+	Model string `json:"model,omitempty"`
 	// Start is the ordered list of daemon bring-up commands in command mode.
 	Start [][]string `json:"start,omitempty"`
 	// CLI is the engine's control-CLI path for this platform, referenced
@@ -336,7 +364,10 @@ type Action struct {
 	// per process can still show everything it could be switched to.
 	HFCache *ActionHFCache `json:"hf_cache,omitempty"`
 	// LaunchModel makes the action switch the model an engine is serving, for an
-	// engine that has no load call because the model is a launch argument.
+	// engine that has no load call because the model is a launch argument. Set
+	// either `flag` (the model is passed to the launch as a value, vLLM) or
+	// `path` and `marker` (the model is a directory of a local store, Colibri,
+	// persisted as runtime.model and templated as {model}).
 	LaunchModel *ActionLaunchModel `json:"launch_model,omitempty"`
 	// HFPull downloads a Hugging Face repository into the hub cache with the
 	// engine's own `hf` tool, reporting byte progress. Only pull_model uses it.
@@ -369,6 +400,38 @@ type Action struct {
 	// only a restart makes the deletion visible to clients. A stopped engine is
 	// left stopped; a restart failure fails the action.
 	RestartAfter bool `json:"restart_after,omitempty"`
+	// ScanDir lists the models in a directory store: each directory at Depth
+	// below Root that contains Marker. It needs no running engine.
+	ScanDir *ActionScanDir `json:"scan_dir,omitempty"`
+	// HFSnapshot downloads a whole Hugging Face model repository into Dest.
+	// Only valid as pull_model; it needs no running engine.
+	HFSnapshot *ActionHFSnapshot `json:"hf_snapshot,omitempty"`
+}
+
+// ActionScanDir is the directory-listing spec of a scan_dir action. Root is
+// templated with the path placeholders. The result is
+// {"models":[{"name":"<relative path, / separated>"}]}, which a result spec of
+// {"array":"models","field":"name"} extracts.
+type ActionScanDir struct {
+	Root   string `json:"root"`
+	Marker string `json:"marker"`
+	// Depth is how many directory levels below Root a model sits: 2 for an
+	// owner/repository layout. Zero means 2.
+	Depth int `json:"depth,omitempty"`
+}
+
+// depthOrDefault returns the effective scan depth.
+func (s *ActionScanDir) depthOrDefault() int {
+	if s.Depth == 0 {
+		return 2
+	}
+	return s.Depth
+}
+
+// ActionHFSnapshot is the spec of an hf_snapshot action. Dest is templated
+// with the path placeholders and {model}, and must stay inside the store.
+type ActionHFSnapshot struct {
+	Dest string `json:"dest"`
 }
 
 // ActionResult is the list-extraction spec on an Action (see Action.Result).
@@ -433,11 +496,16 @@ type ActionHFPull struct {
 	Dir  string `json:"dir"`
 }
 
-// ActionLaunchModel names the launch flag that selects the engine's model, such
-// as "--model". The action takes {"model": "<id>"}, writes it into the saved
-// launch settings and restarts a running engine on it.
+// ActionLaunchModel names the model an engine serves, in one of two forms.
+// Flag names the launch argument that takes it, such as "--model": the action
+// writes the id into the saved launch settings and restarts a running engine on
+// it. Path and Marker describe a model held as a directory of a local store:
+// Path is templated with the path placeholders and {model}, Marker must exist
+// inside it, and the choice persists as runtime.model.
 type ActionLaunchModel struct {
-	Flag string `json:"flag"`
+	Flag   string `json:"flag,omitempty"`
+	Path   string `json:"path,omitempty"`
+	Marker string `json:"marker,omitempty"`
 }
 
 // ActionHTTP is a templated call against the engine's loopback base URL.
@@ -849,12 +917,14 @@ func (m *Manifest) Validate() error {
 		// process is spawned, the reply races the engine's own startup, and the
 		// caller can still be handed the pre-restart state. Fail at load rather
 		// than ship a guarantee the manifest cannot keep.
-		// launch_model rewrites the saved launch settings and restarts the engine,
-		// so every platform needs editable launch settings and a readiness probe
-		// for the same reason as restart_after.
+		// launch_model with a flag rewrites the saved launch settings and restarts
+		// the engine, so every platform needs editable launch settings and a
+		// readiness probe for the same reason as restart_after. The path form
+		// persists runtime.model instead of editing the launch command, so only
+		// the readiness probe applies to it — and restart_after already demands it.
 		if a.LaunchModel != nil {
 			for key, p := range m.Platforms {
-				if p.Runtime.EditableLaunch == nil {
+				if a.LaunchModel.Flag != "" && p.Runtime.EditableLaunch == nil {
 					return fmt.Errorf("action %q: launch_model requires platform %q to declare runtime.editable_launch", name, key)
 				}
 				if p.Runtime.Ready == nil {
@@ -892,6 +962,12 @@ func (m *Manifest) Validate() error {
 	}
 	if act, ok := m.Actions["loaded_models"]; ok && act.Result != nil && act.Result.InventoryField != "" && m.AdvertisedModels != advertisedModelsLoaded && m.AdvertisedModels != advertisedModelsAvailable {
 		return fmt.Errorf("action %q: result.inventory_field requires advertised_models %q", "loaded_models", advertisedModelsLoaded)
+	}
+	if err := m.validateCatalog(); err != nil {
+		return err
+	}
+	if err := m.validateModelTypes(); err != nil {
+		return err
 	}
 	return m.validatePlaceholders()
 }
@@ -1122,29 +1198,25 @@ func (a *Action) validate(name string) error {
 	hasLaunchModel := a.LaunchModel != nil
 	hasHFPull := a.HFPull != nil
 	kinds := 0
-	if hasHTTP {
-		kinds++
-	}
-	if hasCmd {
-		kinds++
-	}
-	if hasRemovePath {
-		kinds++
-	}
-	if hasHFCache {
-		kinds++
-	}
-	if hasLaunchModel {
-		kinds++
-	}
-	if hasHFPull {
-		kinds++
-	}
-	if a.StopEngine {
-		kinds++
+	for _, present := range []bool{hasHTTP, hasCmd, hasRemovePath, hasHFCache, hasLaunchModel, hasHFPull,
+		a.StopEngine, a.ScanDir != nil, a.HFSnapshot != nil} {
+		if present {
+			kinds++
+		}
 	}
 	if kinds != 1 {
-		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, or stop_engine is required", name)
+		return fmt.Errorf("action %q: exactly one of http, cmd, remove_path, hf_cache, launch_model, hf_pull, stop_engine, scan_dir, or hf_snapshot is required", name)
+	}
+	if s := a.ScanDir; s != nil {
+		if strings.TrimSpace(s.Root) == "" || strings.TrimSpace(s.Marker) == "" {
+			return fmt.Errorf("action %q: scan_dir.root and scan_dir.marker are required", name)
+		}
+		if d := s.depthOrDefault(); d < 1 || d > 4 {
+			return fmt.Errorf("action %q: scan_dir.depth %d invalid (want 1 to 4)", name, s.Depth)
+		}
+		if !validMarkerName(s.Marker) {
+			return fmt.Errorf("action %q: scan_dir.marker %q must be a plain file name", name, s.Marker)
+		}
 	}
 	if a.StopEngine && name != "unload_model" {
 		return fmt.Errorf("action %q: stop_engine belongs to unload_model", name)
@@ -1156,9 +1228,21 @@ func (a *Action) validate(name string) error {
 		}
 	}
 	if hasLaunchModel {
-		flag := a.LaunchModel.Flag
-		if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
-			return fmt.Errorf("action %q: launch_model.flag %q must be a flag such as \"--model\"", name, flag)
+		flag, path, marker := a.LaunchModel.Flag, a.LaunchModel.Path, a.LaunchModel.Marker
+		switch {
+		case flag != "" && path == "":
+			if !strings.HasPrefix(flag, "-") || strings.ContainsAny(flag, " \t=") {
+				return fmt.Errorf("action %q: launch_model.flag %q must be a flag such as \"--model\"", name, flag)
+			}
+		case flag == "" && path != "":
+			if strings.TrimSpace(marker) == "" {
+				return fmt.Errorf("action %q: launch_model needs flag, or path and marker", name)
+			}
+			if !validMarkerName(marker) {
+				return fmt.Errorf("action %q: launch_model.marker %q must be a plain file name", name, marker)
+			}
+		default:
+			return fmt.Errorf("action %q: launch_model sets either flag or path and marker, not both", name)
 		}
 	}
 	if hasHFCache && strings.TrimSpace(a.HFCache.Dir) == "" {
@@ -1169,6 +1253,19 @@ func (a *Action) validate(name string) error {
 	}
 	if hasHFCache && a.HFCache.Delete != (strings.TrimSpace(a.HFCache.Tool) != "") {
 		return fmt.Errorf("action %q: hf_cache.delete and hf_cache.tool go together", name)
+	}
+	if h := a.HFSnapshot; h != nil {
+		if strings.TrimSpace(h.Dest) == "" {
+			return fmt.Errorf("action %q: hf_snapshot.dest is required", name)
+		}
+		if name != pullModelAction {
+			return fmt.Errorf("action %q: hf_snapshot is only valid as %s", name, pullModelAction)
+		}
+		// The streaming pull path never goes through Action, so the flag would
+		// be silently ignored. Refuse it rather than promise a restart.
+		if a.RestartAfter {
+			return fmt.Errorf("action %q: hf_snapshot does not support restart_after", name)
+		}
 	}
 	if hasRemovePath {
 		if strings.TrimSpace(a.RemovePath.Path) == "" || strings.TrimSpace(a.RemovePath.Root) == "" {
@@ -1237,8 +1334,16 @@ func (a *Action) validate(name string) error {
 	return nil
 }
 
+// validMarkerName reports a marker that names one file directly inside a
+// model directory: no separators, no parent references, no placeholders.
+func validMarkerName(name string) bool {
+	return name != "." && name != ".." && !strings.ContainsAny(name, `/\{}`) && strings.TrimSpace(name) == name
+}
+
 // validatePlaceholders rejects any `{token}` outside the placeholders
 // available to the platform or manifest-global action that contains it.
+// {model} is accepted only in runtime args and env and in the launch_model and
+// hf_snapshot paths, the places the runner resolves it.
 func (m *Manifest) validatePlaceholders() error {
 	for key, platform := range m.Platforms {
 		allowed := make(map[string]bool, len(allowedPlaceholders))
@@ -1253,8 +1358,19 @@ func (m *Manifest) validatePlaceholders() error {
 		if err := validatePlaceholderStrings(platform.templatedStrings(), allowed); err != nil {
 			return fmt.Errorf("platform %q: %w", key, err)
 		}
+		launch := make(map[string]bool, len(allowed)+1)
+		for name := range allowed {
+			launch[name] = true
+		}
+		launch["model"] = true
+		if err := validatePlaceholderStrings(platform.launchTemplatedStrings(), launch); err != nil {
+			return fmt.Errorf("platform %q: %w", key, err)
+		}
 	}
 	if err := validatePlaceholderStrings(m.actionTemplatedStrings(), allowedPlaceholders); err != nil {
+		return err
+	}
+	if err := validatePlaceholderStrings(m.actionLaunchTemplatedStrings(), launchPlaceholders); err != nil {
 		return err
 	}
 	hfAllowed := map[string]bool{hfHubCachePlaceholder: true}
@@ -1311,17 +1427,37 @@ func (p Platform) templatedStrings() []string {
 		out = append(out, p.Uninstall.Remove...)
 	}
 	out = append(out, p.Runtime.Bin)
-	out = append(out, p.Runtime.Args...)
 	for _, cmd := range p.Runtime.Start {
 		out = append(out, cmd...)
-	}
-	for _, v := range p.Runtime.Env {
-		out = append(out, v)
 	}
 	out = append(out, probeStrings(p.Runtime.Ready)...)
 	out = append(out, probeStrings(p.Runtime.Health)...)
 	if p.Runtime.Stop != nil {
 		out = append(out, p.Runtime.Stop.Cmd...)
+	}
+	return out
+}
+
+// launchTemplatedStrings are the platform strings that may also use {model}:
+// the process launch's args and env.
+func (p Platform) launchTemplatedStrings() []string {
+	out := append([]string(nil), p.Runtime.Args...)
+	for _, v := range p.Runtime.Env {
+		out = append(out, v)
+	}
+	return out
+}
+
+// actionLaunchTemplatedStrings are the action paths that may use {model}.
+func (m *Manifest) actionLaunchTemplatedStrings() []string {
+	var out []string
+	for _, act := range m.Actions {
+		if act.LaunchModel != nil {
+			out = append(out, act.LaunchModel.Path)
+		}
+		if act.HFSnapshot != nil {
+			out = append(out, act.HFSnapshot.Dest)
+		}
 	}
 	return out
 }
@@ -1332,6 +1468,9 @@ func (m *Manifest) actionTemplatedStrings() []string {
 		if act.RemovePath != nil {
 			out = append(out, act.RemovePath.Root)
 			// Path may template caller params (e.g. {model}); validated at call time.
+		}
+		if act.ScanDir != nil {
+			out = append(out, act.ScanDir.Root)
 		}
 	}
 	// hf_cache and hf_pull dirs are checked by hfActionDirs. Action http.path / cmd are resolved from runtime params (e.g.

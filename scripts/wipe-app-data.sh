@@ -48,7 +48,7 @@ Delete all NVIDIA PAIR-owned application data (settings, logs, cluster
 identity, chat history, and PAIR-managed engines).
 
 Does NOT delete model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models,
-~/.cache/huggingface).
+~/.cache/huggingface, ~/colibri-models).
 Does NOT uninstall the application binary.
 
 Options:
@@ -220,7 +220,7 @@ if [[ "$CONFIRM" -eq 0 ]]; then
   fi
   echo ""
   echo "WARNING: This permanently deletes all NVIDIA PAIR app data."
-  echo "Model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models, ~/.cache/huggingface) are NOT removed."
+  echo "Model libraries (~/.ollama, ~/.llamacpp, ~/.lmstudio/models, ~/.cache/huggingface, ~/colibri-models) are NOT removed."
   echo ""
   echo "Paths to remove:"
   for entry in "${TARGETS[@]}"; do

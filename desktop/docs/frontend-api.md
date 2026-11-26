@@ -117,7 +117,8 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `onSettingsDisconnected(callback)` reports that a node's settings authority
   became unreachable, so its cached snapshot is stale.
 
-`EngineType` currently includes `ollama`, `lm-studio`, `llama-cpp`, and `vllm`.
+`EngineType` currently includes `ollama`, `lm-studio`, `llama-cpp`, `vllm`, and
+`colibri`.
 vLLM serves one model per process, so `unloadModel` (Eject) stops the engine,
 which frees its GPU memory, and `loadModel` on a stopped engine starts it. Its model
 list is the Hugging Face cache, which stays available while the engine is stopped, `deleteModel` removes a cached model (not the one
@@ -125,8 +126,12 @@ loaded in vLLM; deleting an ejected or stopped vLLM's model leaves it with no mo
 selected until `loadModel` picks one), `pullModel` downloads a Hugging Face repo into
 that cache (no running engine needed), and `loadModel` on a cached model switches
 the served model by restarting vLLM on it.
+Colibri likewise serves one model per process, but it has no unload: its model
+list is the `~/colibri-models` store that `pullModel` fills with whole
+`owner/repository` snapshots, and `loadModel` switches the served model by
+restarting the engine on it.
 `searchHub(engineType, nodeId, query?)` serves Ollama's locked local catalog,
-cached live Hugging Face catalogs for LM Studio and vLLM, and llama.cpp's
+cached live Hugging Face catalogs for LM Studio, vLLM and Colibri, and llama.cpp's
 catalog from the node's selected download source. For a peer's llama.cpp
 it first reads that peer's saved model download source and lists that source,
 Hugging Face or ModelScope, even when this device selected the other; a peer
@@ -137,10 +142,11 @@ rows and the backend's `searchable` flag, which controls whether the model hub
 submits an upstream query or filters the populated list locally. An unavailable
 catalog reports `searchable: null`, so an explicit query can retry after an
 initial browse failure. A non-empty
-llama.cpp or vLLM query performs an explicit bounded search: GGUF repositories
-in the node's llama.cpp download source, or public Hugging Face safetensors chat
-models for vLLM;
-other calls return the populated engine catalog. llama.cpp pull
+llama.cpp, vLLM or Colibri query performs an explicit bounded search: GGUF repositories
+in the node's llama.cpp download source, public Hugging Face safetensors chat
+models for vLLM, or repositories within the `colibri` tag;
+other calls return the populated engine catalog. Colibri pull
+IDs are `owner/repository` ids. llama.cpp pull
 IDs are exact `owner/repository:quantization` values; load, unload, and delete
 all use that same exact id.
 
@@ -259,8 +265,10 @@ Canceling.
 - the node-local Inference Demo (`inferenceDemo.getState()` / `start()` / `stop()`
   and the `demo:state` push). `start()` rejects if a demo is already running on
   this node or if no Ollama, LM Studio, or llama.cpp proxy exposed a
-  text-generation model; callers show that as an ordinary error banner. Demo
-  state is not synchronized across nodes.
+  text-generation model; callers show that as an ordinary error banner. Colibri
+  is deliberately not driven by the demo, because a server that holds one model
+  per process cannot absorb its burst of concurrent agents. Demo state is not
+  synchronized across nodes.
 
 `demo:state` is a main-to-renderer broadcast rather than a service push, so it is
 typed in `IpcPushChannelMap` (`shared/types/ipc-channels.ts`) instead of the
