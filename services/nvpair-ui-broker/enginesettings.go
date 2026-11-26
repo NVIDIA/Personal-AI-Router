@@ -263,7 +263,12 @@ func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string,
 	if config.ServerPort == config.ProxyPort {
 		return fmt.Errorf("Server port and proxy port collide: both are %d. Choose different ports.", config.ServerPort)
 	}
-	reserved := map[int]bool{engineManagerHTTPPort: true, engineControlPort: true, nodeInfoHTTPPort: true, errorsHTTPPort: true, workloadHTTPPort: true, clusterManagerHTTPPort: true}
+	// The broker's own service block is reserved whether or not those workers
+	// have spawned yet, so seed from the resolved block rather than the cache.
+	reserved := make(map[int]bool, len(b.ports().all()))
+	for _, port := range b.ports().all() {
+		reserved[port] = true
+	}
 	if alias := b.currentOllamaHostAlias().Port; alias > 0 {
 		reserved[alias] = true
 	}

@@ -17,17 +17,7 @@ import (
 	"nvpair-shared/errors"
 )
 
-const (
-	ollamaHostAliasBlockedID = "ollama-proxy:ollama-host-alias-blocked"
-
-	// These ports are fixed by the broker-owned service topology. Keep the
-	// values here as the broker's single source and use them when registering
-	// the corresponding workers as well as when reserving an OLLAMA_HOST alias.
-	nodeInfoHTTPPort       = 14318
-	errorsHTTPPort         = 14319
-	workloadHTTPPort       = 14320
-	clusterManagerHTTPPort = 14321
-)
+const ollamaHostAliasBlockedID = "ollama-proxy:ollama-host-alias-blocked"
 
 type ollamaHostAlias struct {
 	Address          string
@@ -184,7 +174,7 @@ func (b *Broker) prepareOllamaHostAlias(enabled bool, backendPort int) {
 	if backendPort > 0 {
 		enginePorts[backendPort] = "ollama"
 	}
-	if reason := reservedOllamaHostAliasPort(alias.Port, enginePorts, b.siblingEngineProxyPorts(ollamaProxyProfile)); reason != "" {
+	if reason := reservedOllamaHostAliasPort(alias.Port, enginePorts, b.siblingEngineProxyPorts(ollamaProxyProfile), b.ports()); reason != "" {
 		b.reportOllamaHostAliasBlocked(alias.displayAddress(), reason)
 		return
 	}
@@ -383,7 +373,9 @@ func (b *Broker) siblingEngineProxyPorts(self engineProxyProfile) map[int]string
 	return reserved
 }
 
-func reservedOllamaHostAliasPort(port int, enginePorts map[int]string, siblingProxyPorts map[int]string) string {
+// reservedOllamaHostAliasPort explains why `port` cannot become the OLLAMA_HOST
+// alias because the broker's own service block (or a proxy/engine) owns it.
+func reservedOllamaHostAliasPort(port int, enginePorts map[int]string, siblingProxyPorts map[int]string, ports portBlock) string {
 	if engine, ok := enginePorts[port]; ok {
 		if engine == "" {
 			engine = "an engine"
@@ -394,17 +386,17 @@ func reservedOllamaHostAliasPort(port int, enginePorts map[int]string, siblingPr
 		return reason
 	}
 	switch port {
-	case nodeInfoHTTPPort:
+	case ports.nodeInfoHTTP:
 		return fmt.Sprintf("the node-info service uses port %d", port)
-	case errorsHTTPPort:
+	case ports.errorsHTTP:
 		return fmt.Sprintf("the errors service uses port %d", port)
-	case workloadHTTPPort:
+	case ports.workloadHTTP:
 		return fmt.Sprintf("the workload service uses port %d", port)
-	case clusterManagerHTTPPort:
+	case ports.clusterManagerHTTP:
 		return fmt.Sprintf("the cluster manager uses port %d", port)
-	case engineManagerHTTPPort:
+	case ports.engineManagerHTTP:
 		return fmt.Sprintf("the engine model service uses port %d", port)
-	case engineControlPort:
+	case ports.engineControl:
 		return fmt.Sprintf("the engine control service uses port %d", port)
 	}
 	return ""

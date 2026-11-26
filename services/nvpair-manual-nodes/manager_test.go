@@ -85,7 +85,7 @@ func httpJSON(status int, body string) (*http.Response, error) {
 
 func newTestManager() (*Manager, *captureRW, *fakeRoundTripper) {
 	rw := newCaptureRW()
-	m := NewManager(NewCodec(rw), nil)
+	m := NewManager(NewCodec(rw), nil, 14318)
 	rt := newFakeRoundTripper()
 	m.client = &http.Client{Transport: rt, Timeout: time.Second}
 	return m, rw, rt
@@ -905,12 +905,44 @@ func TestLogSetLevel_AppliesRequestedVerbosity(t *testing.T) {
 	assert.Equal(t, -32602, resp.Error.Code, "invalid log/set-level error")
 }
 
+// A broker started with a shifted --port-base hands --node-info-port its
+// resolved ni port. Every entry that does not state an explicit tls_port must
+// report that port in its status and preview it, so a manual node of a shifted
+// deployment is probed where that deployment actually listens.
+func TestManager_DefaultNodeInfoPort_FlowsIntoStatusAndPreview(t *testing.T) {
+	const shiftedPort = 20000
+	m := NewManager(NewCodec(newCaptureRW()), nil, shiftedPort)
+
+	status := m.addNode(ManualEntry{Address: "192.0.2.30", Name: "shifted"})
+	assert.Equal(t, shiftedPort, status.NodeInfoPort, "bare entry status port")
+	assert.False(t, status.TLSEnabled, "the default port is not a TLS hint")
+
+	t.Run("explicit tls_port still outranks the default", func(t *testing.T) {
+		status := m.addNode(ManualEntry{Address: "192.0.2.31", Name: "pinned", TLSPort: 24433})
+		assert.Equal(t, 24433, status.NodeInfoPort)
+		assert.True(t, status.TLSEnabled, "tls_port set TLSEnabled")
+	})
+
+	t.Run("preview falls back to the default until a port is reported", func(t *testing.T) {
+		node := &trackedNode{entry: ManualEntry{Address: "192.0.2.30", Name: "shifted"}}
+		assert.Equal(t, shiftedPort, node.previewPort(shiftedPort))
+
+		node.status.NodeInfoPort = 21000
+		assert.Equal(t, 21000, node.previewPort(shiftedPort),
+			"a reported port must outrank the configured default")
+	})
+
+	// Production construction: the canonical default keeps the historical 14318.
+	canonical := NewManager(NewCodec(newCaptureRW()), nil, 14318)
+	assert.Equal(t, 14318, canonical.addNode(ManualEntry{Address: "192.0.2.32"}).NodeInfoPort)
+}
+
 func TestShutdownRequest_CancelsRun(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
 	defer client.Close()
 
-	mgr := NewManager(NewCodec(server), nil)
+	mgr := NewManager(NewCodec(server), nil, 14318)
 	done := make(chan error, 1)
 	ctx := t.Context()
 	go func() {

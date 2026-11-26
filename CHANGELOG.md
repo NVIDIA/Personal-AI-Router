@@ -11,6 +11,12 @@ published releases on GitHub.
 Builds from this repository are unsigned and configure no update feed, so
 automatic updates are unavailable in them.
 
+## 1.1.5 — Cross-process tests run beside a running installation (#230)
+
+- The Go cross-process test suite no longer requires quitting the running service stack first: each run allocates its own worker port block, so it can run alongside a live installation.
+- The broker accepts an optional `--port-base` to place its six-port worker block elsewhere. The shipped application keeps using the standard block, 14318-14323.
+- Manually added nodes follow the broker's resolved node-info port when the block is moved.
+
 ## 1.1.4 — Simplify pairing code and reject out-of-order messages (#184)
 
 - Pairing rejects premature completion and key-exchange messages, preventing authentication bypasses, crashes, and stuck pairing sessions.

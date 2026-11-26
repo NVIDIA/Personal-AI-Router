@@ -16,11 +16,13 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/noderec"
 )
 
 func main() {
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	clusterDir := flag.String("cluster-dir", "", "cluster identity and current certificate pins for authenticated node-info reads")
+	nodeInfoPort := flag.Int("node-info-port", noderec.DefaultPortBase, "node-info port for entries without an explicit tls_port; the broker passes its resolved ni port so manual entries follow a --port-base shift")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -64,7 +66,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
-	mgr := NewManager(codec, mesh)
+	mgr := NewManager(codec, mesh, *nodeInfoPort)
 
 	if err := mgr.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("manager error: %v", err)

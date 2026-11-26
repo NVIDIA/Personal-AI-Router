@@ -349,6 +349,16 @@ func TestDispatchHardwarePreviews_SamplesVerifiedPeersWhilePreviewWorkersAreBusy
 // still allow only four HTTP reads in total, rather than four nodes each reading
 // several addresses. Releasing them must let every discovery publish a preview.
 func TestDispatchHardwarePreviews_LimitsConcurrentReadsAcrossNodesAndAddresses(t *testing.T) {
+	// The fan-out under test needs a second bindable loopback address. Linux
+	// aliases all of 127.0.0.0/8 to lo so this runs there and in CI; macOS
+	// answers only 127.0.0.1 until an alias is added by hand. Skip rather
+	// than fail, so the suite stays green on a Mac without reconfiguring
+	// its network stack.
+	probe, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skipf("no second loopback address on this host: %v (enable with `sudo ifconfig lo0 alias 127.0.0.2`)", err)
+	}
+	require.NoError(t, probe.Close())
 	const readerLimit = 4
 	started := make(chan struct{}, 10)
 	release := make(chan struct{})
