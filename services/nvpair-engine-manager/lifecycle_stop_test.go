@@ -34,8 +34,9 @@ func TestStop_TerminatesManagedEngineWithinGracePeriod(t *testing.T) {
 
 // spawnFakeListener starts a fake-engine copied to binPath, bound to
 // 127.0.0.1:port, and skips the test when this host can't resolve the PID/
-// image behind a listening port (no lsof/ss, or a /proc-less OS) — the
-// reclaim/decline behavior can't be exercised without that resolution.
+// image behind a listening port (no lsof/ss, or a kernel that reports no
+// executable for a PID) — the reclaim/decline behavior can't be exercised
+// without that resolution.
 func spawnFakeListener(t *testing.T, binPath string, port int) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(binPath)

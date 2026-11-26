@@ -191,13 +191,43 @@ func normalizeEngineImage(path string) string {
 // running the same binary this service manages for the engine (st.binPath).
 // The compare is path-cleaned and case-insensitive so a PAIR-owned orphan on
 // our managed port is reclaimed by Stop, while an unrelated process that
-// merely grabbed the port is left for the caller to decline. An empty image
-// (e.g. a PID we can't introspect) never matches, so Stop fails closed.
+// merely grabbed the port is left for the caller to decline. When that first
+// compare differs only in spelling — macOS reports a running process's image
+// canonically (/private/var/...) while a managed path can be written through
+// a symlink (/var/...) — it tries again with every symlink component
+// resolved. An empty image (e.g. a PID we can't introspect) never matches,
+// so Stop fails closed.
 func isOurEngineImage(image, binPath string) bool {
 	if image == "" || binPath == "" {
 		return false
 	}
-	return strings.EqualFold(normalizeEngineImage(image), normalizeEngineImage(binPath))
+	want, ours := normalizeEngineImage(image), normalizeEngineImage(binPath)
+	if strings.EqualFold(want, ours) {
+		return true
+	}
+	canImage, ok := canonicalPath(want)
+	if !ok {
+		return false
+	}
+	canOurs, ok := canonicalPath(ours)
+	return ok && strings.EqualFold(canImage, canOurs)
+}
+
+// canonicalPath resolves every symlink component of an absolute path. When
+// the final element itself no longer exists — a replaced binary still
+// running, whose kernel-reported path names the deleted file — the directory
+// is resolved instead and the name re-joined, mirroring how the " (deleted)"
+// suffix still matches on Linux. A path that cannot be resolved at all
+// answers false, which is the fail-closed direction.
+func canonicalPath(path string) (string, bool) {
+	if canon, err := filepath.EvalSymlinks(path); err == nil {
+		return canon, true
+	}
+	canon, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(canon, filepath.Base(path)), true
 }
 
 // isManagedInstallPath reports whether binPath is inside this engine's

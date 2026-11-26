@@ -8,18 +8,17 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
-// portLookupTimeout bounds each external port-owner lookup (lsof/ss). The
-// broker no longer force-kills engine-manager on a timeout, so an unbounded
-// lookup that hung would wedge StopAll (and the whole app shutdown).
+// portLookupTimeout bounds each external lookup against a live process
+// (port owner via lsof/ss, executable image via lsof). The broker no longer
+// force-kills engine-manager on a timeout, so an unbounded lookup that hung
+// would wedge StopAll (and the whole app shutdown).
 const portLookupTimeout = 2 * time.Second
 
 // configureSysProcAttr puts the child in its own process group so a
@@ -93,47 +92,6 @@ func ssPID(port int) (int, bool) {
 		return p, true
 	}
 	return 0, false
-}
-
-// procImage resolves a PID's executable path via /proc (Linux). macOS has no
-// /proc, so it returns "" there and the image check is skipped — reclamation
-// on macOS relies on the caller declining when the image can't be confirmed.
-func procImage(pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	if path, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); err == nil {
-		return path
-	}
-	return ""
-}
-
-// procRunsScript reports whether pid was started as an interpreter running the
-// engine script at binPath. An engine installed as a Python package (vLLM's
-// venv/bin/vllm) is a script, so the process's executable is the interpreter and
-// procImage never matches binPath; what does match is the script named in the
-// command line, as one of its first arguments ("python /path/venv/bin/vllm
-// serve ..."). Linux only: elsewhere there is no /proc to read, and the answer
-// is false, which keeps the caller failing closed.
-func procRunsScript(pid int, binPath string) bool {
-	if pid <= 0 || binPath == "" {
-		return false
-	}
-	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
-	if err != nil {
-		return false
-	}
-	want := filepath.Clean(binPath)
-	if !filepath.IsAbs(want) {
-		return false // an engine path is absolute; a bare word could match any argument
-	}
-	args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
-	for i := 0; i < len(args) && i < 3; i++ {
-		if args[i] != "" && filepath.Clean(args[i]) == want {
-			return true
-		}
-	}
-	return false
 }
 
 // signalPID sends SIGTERM (or SIGKILL when force) to the process group when
