@@ -173,8 +173,12 @@ the host that record describes. For an unverified discovery, `hostUuid` is only
 an advertised claim. Two announcements can claim the same `hostUuid` while
 receiving different `discoveryRecordId` values because their service instances
 or connection endpoints differ. Those distinct record IDs let Scanner track
-the candidates separately while checking their claims. Neither identifier proves
-ownership of a host; `identityVerification` records how identity was established.
+the candidates separately while checking their claims. A record ID is
+computed from the announcement's service instance name, its advertised
+node-info port, and its address set; the SRV host label is not an input, so a
+node re-advertising under a different host label with those unchanged keeps
+its record ID. Neither identifier proves ownership of a host;
+`identityVerification` records how identity was established.
 
 ## 7. API / Interface Contract
 
@@ -292,6 +296,15 @@ select a service's connection port. TXT service ports identify where to try
 connecting. Verified peer ports come from authenticated node-info metadata.
 Unknown service keys with valid ports are retained. The TXT record lists at most
 four addresses, in preferred order.
+
+The SRV target, and the address (A) records published with the announcement,
+share one host label that Scanner derives from the node UUID: `nvpair-` plus
+the UUID's first twelve hex digits, lowercased, for example `nvpair-f0e1d2c34b5a`
+(`noderec.HostLabel`). It is a name PAIR claims for itself, never the
+machine's hostname. With no usable node UUID, the label instead hashes the
+hostname under the same prefix and Scanner warns that the name follows host
+renames; with no usable UUID and no hostname, Scanner starts no `_nvpair-node`
+responder at all and advertises nothing over mDNS.
 
 The service instance name comes from the hostname. It can help distinguish
 discovery records, but cannot establish a verified host's identity. Different

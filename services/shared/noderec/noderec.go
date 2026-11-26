@@ -47,7 +47,10 @@ const (
 	Domain = "local"
 	// SRVPort is the fixed, non-authoritative SRV port on the _nvpair-node
 	// record. Consumers MUST ignore it and read each service's port from TXT;
-	// it exists only so the SRV record is well-formed and deterministic.
+	// it exists only so the SRV record is well-formed and deterministic. The
+	// SRV target is the single per-host label HostLabel derives from the node
+	// UUID, never the machine's hostname, and the announcement's A records
+	// carry that same name.
 	SRVPort = 14318
 	// SchemaVersion is the current v= TXT schema version. It is for
 	// diagnostics/logs/tests and to disambiguate the record format across future

@@ -5,6 +5,9 @@
 // subprocess can advertise so peers can tell two hosts apart even when they
 // share a hostname (the mDNS instance name defaults to os.Hostname(), so a
 // hostname collision otherwise silently merges two machines into one node).
+// The same UUID also fixes the host label PAIR advertises beside it
+// (noderec.HostLabel), so an identity that cannot be saved and re-mints on
+// every start renames the host as well.
 //
 // It reuses the nvpair-cluster-manager's persisted cryptographic identity
 // (<config>/cluster/identity.json) when present, so a host presents one UUID
@@ -18,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -55,7 +59,15 @@ func Resolve(baseDir string) string {
 	if err != nil {
 		return ""
 	}
-	_ = persist(idPath, u) // best effort; an unpersisted UUID is still usable for this run
+	if err := persist(idPath, u); err != nil {
+		// The UUID is still usable for this run, but nothing reached disk, so the
+		// next start mints a different one and both names derived from it move:
+		// the node UUID in TXT and the host label advertised with it. This is the
+		// only place that can tell "read from disk" from "minted but unsaved", so
+		// the failed write is reported here rather than as a provenance flag.
+		slog.Warn("node identity could not be persisted; the advertised node UUID and host label will change on every start",
+			"path", idPath, "err", err)
+	}
 	return u
 }
 

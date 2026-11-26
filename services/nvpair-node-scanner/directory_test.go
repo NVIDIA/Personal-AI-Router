@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"nvpair-shared/netpick"
 	"nvpair-shared/noderec"
 )
 
@@ -279,7 +280,44 @@ func TestToDirectoryNode_AddressOrderAndClaimChangesPreserveDiscoveryRecordID(t 
 	test("identity and other service claims change", claims)
 }
 
+// netpick.Candidates deliberately preserves the publisher's order, so a node
+// re-publishing its own instance can hand the hash the same address set in a
+// different order: one fixture publishes "192.0.2.30,192.0.2.20", which is not
+// sort.Strings order, and the other the reverse. Only the hash's own
+// normalization keeps them at one record ID. The "resolved address order
+// changes" case above cannot stand in for this one: its TXT publishes no
+// ip=/ips=, so netpick.RankRemote's ascending tie-break sorts the addresses
+// before the hash sees a difference.
+func TestToDirectoryNode_PublishedAddressOrderChangesPreserveDiscoveryRecordID(t *testing.T) {
+	published := RawNode{
+		ID:        "spark",
+		Host:      "nvpair-0123456789ab.local.",
+		Addresses: []string{"192.0.2.20", "192.0.2.30"},
+		TXT: []string{
+			"v=1", "uuid=spark-1", "ni=14318",
+			"ip=192.0.2.30", "ips=192.0.2.30,192.0.2.20",
+		},
+	}
+	republished := published
+	republished.TXT = []string{
+		"v=1", "uuid=spark-1", "ni=14318",
+		"ip=192.0.2.20", "ips=192.0.2.20,192.0.2.30",
+	}
+
+	first, ok := toDirectoryNode(published)
+	require.True(t, ok, "published observation was not projected")
+	second, ok := toDirectoryNode(republished)
+	require.True(t, ok, "re-published observation was not projected")
+	require.NotEmpty(t, first.DiscoveryRecordID)
+	assert.Equal(t, first.DiscoveryRecordID, second.DiscoveryRecordID,
+		"swapping the published ip=/ips= order changed the discovery record ID")
+}
+
 func TestToDirectoryNode_DifferencesInDiscoveryFieldsYieldDifferentDiscoveryRecordIDs(t *testing.T) {
+	// Every field listed here is a hash input by rule. The SRV target used to be
+	// one of these cases; it is no longer a discovery field, and
+	// TestToDirectoryNode_DoesNotHashTheSRVTarget and
+	// TestNodeDiscoveryRecordID_IgnoresTheSRVTarget now pin that invariant.
 	test := func(name string, candidate RawNode) {
 		t.Run(name, func(t *testing.T) {
 			original, ok := toDirectoryNode(observationFixture())
@@ -295,9 +333,6 @@ func TestToDirectoryNode_DifferencesInDiscoveryFieldsYieldDifferentDiscoveryReco
 	instance := observationFixture()
 	instance.ID = "another-instance"
 	test("different service instance", instance)
-	host := observationFixture()
-	host.Host = "another-host.local."
-	test("different resolved host", host)
 	address := observationFixture()
 	address.Addresses = []string{"192.0.2.30"}
 	test("copied UUID at another resolved address", address)
@@ -307,6 +342,105 @@ func TestToDirectoryNode_DifferencesInDiscoveryFieldsYieldDifferentDiscoveryReco
 	port := observationFixture()
 	port.TXT = []string{"v=1", "uuid=claimed-host", "cluster-uuid=claimed-principal", "ni=14328"}
 	test("different node-info port", port)
+}
+
+// The SRV target is a PAIR-claimed host label (noderec.HostLabel), so it is not
+// an input to an unverified record ID: a record whose service instance, advertised
+// node-info port and address set are unchanged keeps its ID as the label the peer
+// advertises moves — including the move from a hostname-derived label to a
+// synthetic one when a node upgrades.
+func TestToDirectoryNode_DoesNotHashTheSRVTarget(t *testing.T) {
+	original, ok := toDirectoryNode(observationFixture())
+	require.True(t, ok, "original observation was not projected")
+	require.NotEmpty(t, original.DiscoveryRecordID)
+
+	test := func(name, advertisedHost string) {
+		t.Run(name, func(t *testing.T) {
+			candidate := observationFixture()
+			candidate.Host = advertisedHost
+			next, ok := toDirectoryNode(candidate)
+			require.True(t, ok, "candidate observation was not projected")
+			require.NotEmpty(t, next.DiscoveryRecordID)
+			assert.Equal(t, original.DiscoveryRecordID, next.DiscoveryRecordID,
+				"host label %q changed the unverified record ID", advertisedHost)
+		})
+	}
+
+	test("hostname-derived label replaced by another hostname", "another-host.local.")
+	test("hostname-derived label replaced by the synthetic PAIR label", "nvpair-0123456789ab.local.")
+	test("SRV target missing or unresolvable in the browse result", "")
+}
+
+// nodeDiscoveryRecordID is the key daemon.go hands the browser (WithKeyFunc) and
+// the key the directory stores unverified records under, so the SRV-target rule
+// has to hold there too and not only on the projected node.
+//
+// The fixture publishes an ip= the browse did not resolve, so the two address
+// sources the call sites could use differ: the projection hashes
+// netpick.Candidates(...) while the browser key hashes whatever
+// nodeDiscoveryRecordID feeds it, and an agreement assertion between them is
+// only worth having while those inputs are distinguishable.
+func TestNodeDiscoveryRecordID_IgnoresTheSRVTarget(t *testing.T) {
+	base := observationFixture()
+	base.TXT = append(base.TXT, "ip=192.0.2.30")
+	require.NotEqual(t, netpick.Candidates(base.TXT, base.Addresses), base.Addresses,
+		"the published ip= must stay outside the resolved set, or the call-site agreement assertion below is toothless")
+	baseID := nodeDiscoveryRecordID(base)
+	require.NotEmpty(t, baseID)
+
+	for _, advertisedHost := range []string{"another-host.local.", "nvpair-0123456789ab.local.", ""} {
+		// RawNode has no nested state this test mutates: only the scalar Host
+		// field differs, so the copy needs no deep copy of the slices.
+		candidate := base
+		candidate.Host = advertisedHost
+		assert.Equal(t, baseID, nodeDiscoveryRecordID(candidate),
+			"host label %q reached the record key the browser and directory use", advertisedHost)
+		// Both call sites must still agree: a change to one of them would re-key
+		// the directory under the key the browser no longer uses.
+		node, ok := toDirectoryNode(candidate)
+		require.True(t, ok, "observation with host %q was not projected", advertisedHost)
+		assert.Equal(t, nodeDiscoveryRecordID(candidate), node.DiscoveryRecordID,
+			"the projected record and the browser key diverged for host %q", advertisedHost)
+	}
+}
+
+// The byte-identity proof for this record ID: one exact digest for one fixed
+// input, pinned in the tree rather than in a scratch program. The two cases are
+// one address set published in two orders, so removing the hash's
+// order-insensitivity breaks the first; letting any field that is not a
+// connection input into the hash breaks both — the SRV target and port are
+// populated right here precisely to make that mistake tempting to commit.
+func TestDiscoveryRecordID_MatchesThePinnedGoldenDigest(t *testing.T) {
+	test := func(name string, addresses []string) {
+		t.Run(name, func(t *testing.T) {
+			raw := RawNode{
+				ID:   "workstation",
+				Host: "nvpair-a1b2c3d4e5f6.local.",
+				Port: noderec.SRVPort,
+			}
+			// sha256 over fmt.Sprintf("%q", fields) for fields =
+			// ["workstation" "14318" "192.0.2.10" "192.0.2.20" "192.0.2.30"],
+			// the addresses in sort.Strings order. Updating this digest is a
+			// deliberate, rollout-impacting act: it re-keys every unverified
+			// discovery in the field at once.
+			assert.Equal(t, "observation:a719ee0865d3fe75d10ba7711aa94290d5d1a191ff898a8a0f9577d1cf562678",
+				discoveryRecordID(raw, 14318, addresses))
+		})
+	}
+	test("published order", []string{"192.0.2.30", "192.0.2.10", "192.0.2.20"})
+	test("sorted order", []string{"192.0.2.10", "192.0.2.20", "192.0.2.30"})
+}
+
+// The caller's ranked address order is a candidate preference the hash must read
+// without rewriting: it sorts a clone, so a slice handed to it stays in the
+// publication order its owner is still using.
+func TestDiscoveryRecordID_LeavesTheCallersAddressOrderAlone(t *testing.T) {
+	raw := RawNode{ID: "workstation", Host: "workstation.local."}
+	addresses := []string{"192.0.2.30", "192.0.2.10", "192.0.2.20"}
+	want := []string{"192.0.2.30", "192.0.2.10", "192.0.2.20"}
+	recordID := discoveryRecordID(raw, 14318, addresses)
+	require.NotEmpty(t, recordID)
+	assert.Equal(t, want, addresses, "discoveryRecordID sorted the caller's slice in place")
 }
 
 func TestToDirectoryNode_ClaimsNeverVerifyIdentity(t *testing.T) {

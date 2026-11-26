@@ -55,16 +55,31 @@ func toDirectoryNode(raw RawNode) (noderec.DirectoryNode, bool) {
 }
 
 // nodeDiscoveryRecordID identifies a connection candidate, not its claimed owner.
-// Address ordering and UUID/principal claims do not change that identity.
+// Its inputs are the mDNS service instance name, the advertised node-info port,
+// and the address set; address ordering and UUID or principal claims do not change
+// that identity.
+//
+// The SRV target (RawNode.Host) is not an input, and must not become one. It is a
+// host label PAIR claims for itself (noderec.HostLabel), so its value carries a
+// host-identity claim from the network, and it moves on its own: a host whose
+// config directory cannot be written and has no saved identity to read mints a
+// new node UUID each start (nodeid.Resolve), so its label — and every record ID
+// that hashed it — would change every boot. Every element of
+// discoveryRecordID's input list is part of the key, so adding a field back
+// there re-keys every unverified discovery fleet-wide rather than only new ones.
 func nodeDiscoveryRecordID(raw RawNode) string {
 	rec := noderec.ParseTXT(raw.TXT)
 	return discoveryRecordID(raw, rec.Services[noderec.ServiceNodeInfo], netpick.Candidates(raw.TXT, raw.Addresses))
 }
 
+// discoveryRecordID is the only producer of the "observation:" record ID prefix,
+// shared by the browser's key and the projected directory record so they cannot
+// drift. Its inputs are the connection candidate alone; see nodeDiscoveryRecordID
+// before changing them.
 func discoveryRecordID(raw RawNode, nodeInfoPort int, addresses []string) string {
 	addresses = slices.Clone(addresses)
 	sort.Strings(addresses)
-	fields := []string{raw.ID, raw.Host, strconv.Itoa(nodeInfoPort)}
+	fields := []string{raw.ID, strconv.Itoa(nodeInfoPort)}
 	fields = append(fields, addresses...)
 	return fmt.Sprintf("observation:%x", sha256.Sum256([]byte(fmt.Sprintf("%q", fields))))
 }

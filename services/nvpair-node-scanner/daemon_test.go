@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,6 +31,7 @@ import (
 
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
+	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
 )
 
@@ -129,6 +131,114 @@ func newSelfTestDaemon(hostUUID, ip string) *daemon {
 		authWake:       make(chan struct{}, 1),
 		modelsWake:     make(chan struct{}, 1),
 	}
+}
+
+// TestNewDaemon_AdvertisesASyntheticHostLabelNotTheMachineName covers the
+// newDaemon wiring no test reached before: newSelfTestDaemon builds a daemon
+// literal, so the responder construction that decides which host name this
+// node advertises over mDNS was never exercised by anything.
+func TestNewDaemon_AdvertisesASyntheticHostLabelNotTheMachineName(t *testing.T) {
+	dir := t.TempDir()
+	// Pin the node identity through nodeid's own file so the label is
+	// UUID-derived (same trick as newDiscoveryPeerFixture), with a real UUID so
+	// HostLabel takes the UUID rule and not the hostname hash.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node-id.json"),
+		[]byte(`{"node_uuid":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"}`), 0o600))
+	// A nil codec is safe (emit and friends check for nil), and clustertrust.Open
+	// on a fresh directory yields an unclustered mesh.
+	logs := captureLogs(t)
+
+	// baseDir becomes dir, so the pinned node-id.json is what nodeid.Resolve
+	// reads here.
+	d := newDaemon(nil, clustertrust.Open(dir), filepath.Join(dir, "cluster"))
+
+	instance, err := os.Hostname()
+	require.NoError(t, err)
+	// Assert against nodeid.Resolve(dir) rather than a literal UUID so the
+	// expectation cannot drift from what the resolver hands the daemon.
+	want, err := noderec.HostLabel(nodeid.Resolve(dir), instance)
+	require.NoError(t, err)
+	assert.Equal(t, want, d.hostLabel, "newDaemon must advertise the HostLabel of the node UUID")
+	// With a usable node UUID, the label must be UUID-derived: the label
+	// HostLabel would have produced from the hostname alone must NOT be what is
+	// advertised. (Skips only where os.Hostname() is unusable, which is where
+	// no hostname-derived label exists to begin with.)
+	if fallback, fallbackErr := noderec.HostLabel("", instance); fallbackErr == nil {
+		assert.NotEqual(t, fallback, d.hostLabel,
+			"with a usable node UUID the label must not follow the hostname")
+	}
+	assert.NotContains(t, logs.String(), "hostname-derived",
+		"only a hostname-derived label is worth warning about; this one came from the node UUID")
+
+	if d.responder == nil {
+		// A disabled responder is only an environment when the log names the
+		// multicast precondition NewResponder documents; any other reason to
+		// have no responder is the failure this test exists to catch.
+		if !strings.Contains(logs.String(), "no multicast-capable IPv4 interface") {
+			t.Fatalf("newDaemon left d.responder nil without naming the multicast precondition:\n%s", logs)
+		}
+		t.Skipf("no multicast-capable IPv4 interface on this host, so only the hostLabel wiring was asserted")
+	}
+	assert.Equal(t, want+".local.", d.responder.AdvertisedHost(),
+		"the responder's SRV target and A owner name is the synthetic label under the domain")
+	require.NotEqual(t, instance+".local.", d.responder.AdvertisedHost(),
+		"the machine's hostname must never become the advertised host record")
+}
+
+// TestNewDaemon_WarnsWhenTheHostLabelIsHostnameDerived pins the operational
+// warning beside that name: when the node UUID is empty or unusable the
+// advertised label follows the machine's hostname and will move with it, so
+// the log must say so rather than let an operator assume the name is stable.
+func TestNewDaemon_WarnsWhenTheHostLabelIsHostnameDerived(t *testing.T) {
+	dir := t.TempDir()
+	// "self-uuid" is neither empty nor a usable UUID — fewer than twelve hex
+	// digits once sanitized — so HostLabel falls back to hashing the hostname.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node-id.json"),
+		[]byte(`{"node_uuid":"self-uuid"}`), 0o600))
+	logs := captureLogs(t)
+
+	d := newDaemon(nil, clustertrust.Open(dir), filepath.Join(dir, "cluster"))
+
+	require.NotEmpty(t, d.hostLabel, "a hostname-derived label is still advertised, not withheld")
+	assert.Contains(t, logs.String(), "advertising a hostname-derived mDNS host label",
+		"the hostname-derived provenance of the label must be visible in the operational log")
+	assert.Contains(t, logs.String(), "level=WARN", "the warning must be visible at default log level")
+}
+
+// TestNewDaemon_AdvertisesNothingWhenNoHostLabelCanBeDerived pins the branch
+// D6 forbids any fallback into: when HostLabel finds no entropy at all,
+// newDaemon must start no responder, claim no label, and name why in the
+// operational log — never fall back to the machine's hostname. hostLabelOf
+// stands in for the real derivation only because os.Hostname() never fails
+// in-process, so the real HostLabel can never error here; nothing else about
+// newDaemon's path is faked.
+//
+// Tests that touch hostLabelOf must not use t.Parallel: it is package state.
+func TestNewDaemon_AdvertisesNothingWhenNoHostLabelCanBeDerived(t *testing.T) {
+	realHostLabelOf := hostLabelOf
+	t.Cleanup(func() { hostLabelOf = realHostLabelOf })
+	hostLabelOf = func(string, string) (string, error) {
+		return "", errors.New("host label: no node UUID and no usable hostname to derive one from")
+	}
+
+	dir := t.TempDir()
+	logs := captureLogs(t)
+
+	d := newDaemon(nil, clustertrust.Open(dir), filepath.Join(dir, "cluster"))
+
+	assert.Nil(t, d.responder, "without a host label the daemon must advertise nothing, not fall back to one")
+	assert.Empty(t, d.hostLabel, "no label may be claimed when HostLabel found no entropy")
+	assert.Contains(t, logs.String(), "no host label to advertise",
+		"the operational log must name why mDNS advertising was disabled")
+	assert.Contains(t, logs.String(), "level=ERROR", "the reason must be visible at default log level")
+	assert.NotContains(t, logs.String(), "advertisedHost",
+		"nothing was advertised, so no responder success line may have been logged")
+
+	hostname, err := os.Hostname()
+	require.NoError(t, err)
+	require.NotEmpty(t, hostname, "this assertion is vacuous on a host with no hostname to leak")
+	require.NotContains(t, logs.String(), hostname,
+		"the machine hostname must not appear in any log line, least of all as a fallback advertised name")
 }
 
 // The scanner may create a UUID before cluster-manager writes identity.json.
@@ -556,6 +666,35 @@ func TestDiscovery_ReplacesUnverifiedDiscoveryWithVerifiedPeer(t *testing.T) {
 	assert.Equal(t, fakePeerPort, node.Services[noderec.ServiceOllama].Port)
 	assert.Equal(t, f.info.GPUs, node.GPUs)
 	assert.Len(t, f.daemon.dir.snapshot(""), 1)
+}
+
+// A promoted peer's record ID comes from the local certificate pin
+// (Mesh.PeerRecordID), never from the observation hash, so the SRV target stays
+// out of a verified identity on both sides of promotion. This test is a guard and
+// not the red: it passes whether or not raw.Host is a hash input, because nothing
+// on the pinning path reads that field. The tests that do fail while the SRV
+// target is hashed are TestToDirectoryNode_DoesNotHashTheSRVTarget and
+// TestNodeDiscoveryRecordID_IgnoresTheSRVTarget in directory_test.go.
+func TestDiscovery_PinnedPeerRecordIDIgnoresTheSRVTarget(t *testing.T) {
+	f := newDiscoveryPeerFixture(t, "peer-uuid")
+	f.discover(t)
+	pinned, ok := f.daemon.dir.get("peer-uuid")
+	require.True(t, ok, "the pinned peer is missing from the directory")
+	require.Equal(t, noderec.IdentityPinned, pinned.IdentityVerification)
+	require.Equal(t, f.daemon.mesh.PeerRecordID("peer-uuid"), pinned.DiscoveryRecordID)
+	assert.False(t, strings.HasPrefix(pinned.DiscoveryRecordID, "observation:"),
+		"a verified record must not carry the unverified observation prefix (%q)", pinned.DiscoveryRecordID)
+
+	// Announce the same connection candidate again, under another SRV target.
+	f.raw.Host = "another-host.local."
+	f.discover(t)
+
+	again, ok := f.daemon.dir.get("peer-uuid")
+	require.True(t, ok, "the peer disappeared after re-announcing a different host label")
+	assert.Equal(t, pinned.DiscoveryRecordID, again.DiscoveryRecordID,
+		"the host label moved a verified record's ID")
+	snapshot := f.daemon.dir.snapshot("")
+	assert.Len(t, snapshot, 1, "the host label left a second record behind (%v)", snapshot)
 }
 
 // Authenticate a real pinned test peer and inspect the scanner's outbound
@@ -2016,4 +2155,160 @@ func TestDiscovery_FailedAnnouncementUpdateStillAllowsRemovalOfUnavailablePeer(t
 	f.daemon.refreshTelemetryOnce(t.Context())
 	_, present := f.daemon.dir.get("peer-uuid")
 	assert.False(t, present)
+}
+
+// stalledResponder stands in for mdnsResponder with a shutdown a test
+// controls: Run signals that it has begun its goodbye retraction (RFC 6762
+// §10.1) and stays there until the test closes release, then closes finished
+// as it returns. That is the state the real responder is in while the
+// retraction is being sent — the interval daemon.run must not return ahead
+// of. A test cannot use the real responder here: it sends the retraction in
+// microseconds, so nothing about it could show whether the join was honored
+// or skipped, and this proves the join rather than the send (the sends
+// themselves are pinned in nvpair-shared/mdns's goodbye tests).
+type stalledResponder struct {
+	sendingGoodbye chan struct{} // closed when Run begins the retraction
+	release        chan struct{} // the test closes this to finish it
+	finished       chan struct{} // closed when Run returns
+}
+
+func newStalledResponder() *stalledResponder {
+	return &stalledResponder{
+		sendingGoodbye: make(chan struct{}),
+		release:        make(chan struct{}),
+		finished:       make(chan struct{}),
+	}
+}
+
+// Run stays inside its retraction until released, whatever ctx does, so the
+// test decides when the responder is done rather than relying on a real
+// multicast send to take long enough to notice.
+func (r *stalledResponder) Run(context.Context) error {
+	close(r.sendingGoodbye)
+	<-r.release
+	close(r.finished)
+	return nil
+}
+
+func (r *stalledResponder) UpdateTXT([]string) {}
+
+func (r *stalledResponder) AdvertisedHost() string { return "nvpair-self.local." }
+
+// The two browser stubs below each force one way out of daemon.run's browse
+// loop. The real browser closes events as it stops on ctx.Done(), so a
+// cancelled context leaves both select cases ready at the same instant and Go
+// picks either: a faithful browser could only reproduce that coin flip, not
+// the branch it landed on. Pinning each branch keeps both tests
+// deterministic — one proves the responder is still joined after
+// cancellation, the other after the channel closes. Only the second failed
+// before the wait moved into the deferred cleanup.
+//
+// Neither stub sends anything, so SendFailures reports nothing for the local
+// address ranking to work from — a state these tests never reach anyway.
+
+// neverClosesEventsBrowser stays in its scan until ctx is cancelled and
+// leaves events open, so only ctx.Done() can end the browse loop.
+type neverClosesEventsBrowser struct{}
+
+func (neverClosesEventsBrowser) Run(ctx context.Context, events chan<- DiscoveryEvent) {
+	<-ctx.Done()
+}
+
+func (neverClosesEventsBrowser) SendFailures() map[string]bool { return nil }
+
+// closedEventsBrowser has already stopped: Run closes events and returns
+// right away, so the browse loop ends on that closed channel with ctx still
+// live — the way out that used to skip the responder.
+type closedEventsBrowser struct{}
+
+func (closedEventsBrowser) Run(_ context.Context, events chan<- DiscoveryEvent) {
+	close(events)
+}
+
+func (closedEventsBrowser) SendFailures() map[string]bool { return nil }
+
+// waitUntilSendingGoodbye blocks until the responder is in its retraction, so
+// whatever ends the browse loop happens while the retraction is still in
+// progress — the arrangement that has to hold for the wait to mean anything.
+func waitUntilSendingGoodbye(t *testing.T, responder *stalledResponder) {
+	t.Helper()
+	select {
+	case <-responder.sendingGoodbye:
+	case <-time.After(time.Second):
+		require.FailNow(t, "the responder never began its goodbye retraction")
+	}
+}
+
+// assertStillWaitsForTheResponder checks that the browse loop ending did not
+// skip the responder — daemon.run is still in its join while the retraction
+// is unfinished — and that it comes back once the responder is done. The
+// caller has already applied whatever ends the browse loop.
+func assertStillWaitsForTheResponder(t *testing.T, runDone <-chan struct{}, responder *stalledResponder) {
+	t.Helper()
+	select {
+	case <-runDone:
+		require.FailNow(t, "daemon.run returned while the responder was still sending its goodbye",
+			"the retraction has not left the machine, so process exit could cut it short")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(responder.release)
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "daemon.run never returned after the responder finished its goodbye")
+	}
+}
+
+// TestDaemonRun_DoesNotReturnBeforeTheResponderHasShutDownWhenTheContextIsCancelled
+// covers the way out of the browse loop that goes through ctx.Done(): the
+// join must still be taken, and it must succeed rather than run out its
+// timeout, so the scanner cannot reach process exit with the retraction
+// unsent.
+func TestDaemonRun_DoesNotReturnBeforeTheResponderHasShutDownWhenTheContextIsCancelled(t *testing.T) {
+	responder := newStalledResponder()
+	d := newSelfTestDaemon("self-uuid", "192.0.2.1")
+	d.responder = responder
+	d.browser = neverClosesEventsBrowser{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		d.run(ctx)
+	}()
+	waitUntilSendingGoodbye(t, responder)
+
+	cancel()
+
+	assertStillWaitsForTheResponder(t, runDone, responder)
+}
+
+// TestDaemonRun_DoesNotReturnBeforeTheResponderHasShutDownWhenTheBrowserClosesItsEvents
+// covers the other way out: the browser has closed its events channel, so the
+// select takes that branch with ctx still live. Returning straight from it
+// must not skip the responder's shutdown, because the same retraction is
+// still in progress there.
+func TestDaemonRun_DoesNotReturnBeforeTheResponderHasShutDownWhenTheBrowserClosesItsEvents(t *testing.T) {
+	responder := newStalledResponder()
+	d := newSelfTestDaemon("self-uuid", "192.0.2.1")
+	d.responder = responder
+	d.browser = closedEventsBrowser{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		d.run(ctx)
+	}()
+	waitUntilSendingGoodbye(t, responder)
+
+	// Nothing cancels ctx in this case: the browser has already closed
+	// events, so that closed channel is the only thing that can end the
+	// browse loop.
+
+	assertStillWaitsForTheResponder(t, runDone, responder)
 }

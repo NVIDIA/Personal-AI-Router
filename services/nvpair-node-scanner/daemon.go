@@ -31,6 +31,43 @@ import (
 	"nvpair-shared/reach"
 )
 
+// mdnsResponder and discoveryBrowser are the daemon's two mDNS counterparts:
+// the record this node advertises, and the browser watching for everyone
+// else's. They are interfaces only so a test can control when each shuts
+// down — nothing else supplies them, and production always wires
+// mdns.Responder and discovery.Browser, which already satisfy both. Their
+// shutdowns matter together: responder.Run returns only once it has sent its
+// RFC 6762 §10.1 retraction, while the browser closes its events channel as
+// it stops, which is the same instant ctx is cancelled.
+type (
+	// mdnsResponder advertises this node's service record, answering
+	// queries for it until ctx is cancelled, then sends the retraction that
+	// withdraws it before returning.
+	mdnsResponder interface {
+		Run(ctx context.Context) error
+
+		// UpdateTXT swaps the advertised TXT records and re-announces
+		// immediately, so it is safe before or during Run.
+		UpdateTXT(txt []string)
+
+		// AdvertisedHost is the FQDN this node claims as its own host
+		// record — the SRV target and the owner of its A records, trailing
+		// dot included.
+		AdvertisedHost() string
+	}
+
+	// discoveryBrowser scans the service type and forwards each change on
+	// events, which it closes when it stops — which is when ctx is
+	// cancelled. SendFailures reports the interfaces whose multicast sends
+	// could not leave, the evidence localAddresses ranks this host's own
+	// addresses on.
+	discoveryBrowser interface {
+		Run(ctx context.Context, events chan<- DiscoveryEvent)
+
+		SendFailures() map[string]bool
+	}
+)
+
 // daemon owns local registration, candidate discovery, and authenticated peer
 // inventory. It publishes discovery:node-* events for the broker relay, which
 // delivers directory snapshots to service consumers.
@@ -39,8 +76,8 @@ type daemon struct {
 	mesh      *clustertrust.Mesh
 	reg       *registry
 	dir       *directory
-	responder *mdns.Responder
-	browser   *Discovery
+	responder mdnsResponder
+	browser   discoveryBrowser
 	// instance is this node's mDNS instance name (the hostname). It names the
 	// registry-driven self directory entry (publishSelf), which is anchored to
 	// our own identity rather than to hearing our own multicast.
@@ -72,6 +109,12 @@ type daemon struct {
 	// identity.json cluster-manager writes, even under a non-default cluster dir;
 	// empty selects nodeid's shared default (production's default layout).
 	baseDir string
+
+	// hostLabel is the single DNS label PAIR claims as its mDNS host record —
+	// the SRV target and A owner name the responder advertises — derived from
+	// the node UUID by noderec.HostLabel, never the machine's name. Empty when
+	// HostLabel refused and this node advertises nothing over mDNS.
+	hostLabel string
 
 	// clusterDir is the cluster trust subtree (--cluster-dir) holding this node's
 	// keypair, pins, and admission record. It gates whether we advertise a
@@ -298,6 +341,12 @@ func telemetryRetryDelay(consecutiveFailures int) time.Duration {
 }
 
 // newDaemon builds the registry publisher and pinned peer discovery daemon.
+// hostLabelOf is the source of the advertised mDNS host label. It is a
+// variable only so a test can force the no-entropy error the real
+// noderec.HostLabel cannot produce in-process (os.Hostname() never fails or
+// empties here); production always uses noderec.HostLabel.
+var hostLabelOf = noderec.HostLabel
+
 func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon {
 	// nodeid reads <base>/cluster/identity.json; --cluster-dir is that cluster
 	// subdir, so its parent is the base. Empty -> nodeid's shared default.
@@ -320,11 +369,18 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon
 	reg := newRegistry(hostUUID, cluUUID, netpick.LocalCandidates(netpick.Evidence{}))
 
 	instance, _ := os.Hostname()
+	// The host record advertised over mDNS is PAIR's own label from the node
+	// UUID, never `instance`: claiming the machine's name is the contention
+	// that makes macOS append a digit to the computer's Local hostname (issue
+	// #229). The instance name stays the hostname — it is a display name and is
+	// legal even when the hostname is not a single DNS label.
+	hostLabel, labelErr := hostLabelOf(hostUUID, instance)
 	d := &daemon{
 		codec:           codec,
 		mesh:            mesh,
 		reg:             reg,
 		instance:        instance,
+		hostLabel:       hostLabel,
 		baseDir:         baseDir,
 		clusterDir:      clusterDir,
 		dir:             newDirectory(),
@@ -342,10 +398,30 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon
 	d.browser = NewDiscovery(noderec.ServiceType, noderec.Domain,
 		WithKeyFunc(nodeDiscoveryRecordID),
 	)
-	if resp, err := mdns.NewResponder(instance, noderec.ServiceType, noderec.Domain, noderec.SRVPort, reg.txt()); err != nil {
-		slog.Warn("mDNS advertising disabled for _nvpair-node", "err", err)
+	if labelErr != nil {
+		// No entropy to name this host with; advertising a fixed placeholder
+		// would give every host on this path the same record, recreating the
+		// contention the synthetic label exists to avoid. Advertise nothing.
+		slog.Error("mDNS advertising disabled for _nvpair-node: no host label to advertise",
+			"err", labelErr, "baseDir", baseDir)
 	} else {
-		d.responder = resp
+		// HostLabel is pure by design — it cannot log which rule produced the
+		// label — so ask it the fallback question directly: the same call with
+		// no node UUID is hostname-derived by definition, and an equal answer
+		// means the UUID passed in was empty or unusable, so the advertised
+		// name moves if the hostname moves.
+		if derived, derivedErr := noderec.HostLabel("", instance); derivedErr == nil && derived == hostLabel {
+			slog.Warn("advertising a hostname-derived mDNS host label",
+				"hostLabel", hostLabel, "hostUUID", hostUUID,
+				"reason", "no usable node identity, so the label follows the hostname and will move with it")
+		}
+		if resp, err := mdns.NewResponder(instance, hostLabel, noderec.ServiceType, noderec.Domain,
+			noderec.SRVPort, reg.txt()); err != nil {
+			slog.Warn("mDNS advertising disabled for _nvpair-node", "err", err)
+		} else {
+			d.responder = resp
+			slog.Info("advertising _nvpair-node", "instance", instance, "advertisedHost", resp.AdvertisedHost())
+		}
 	}
 	return d
 }
@@ -353,8 +429,17 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string) *daemon
 // run starts the _nvpair-node responder and browser, folding browse events into
 // the directory and emitting discovery:node-* until ctx is cancelled.
 func (d *daemon) run(ctx context.Context) {
+	// responderDone closes when responder.Run returns — including the
+	// shutdown goodbye it sends after ctx is cancelled (RFC 6762 §10.1),
+	// which is why Scanner.Run joins this before allowing process exit.
+	// Nil when the responder is disabled, meaning there is nothing to wait
+	// for.
+	var responderDone <-chan struct{}
 	if d.responder != nil {
+		done := make(chan struct{})
+		responderDone = done
 		go func() {
+			defer close(done)
 			if err := d.responder.Run(ctx); err != nil {
 				slog.Warn("_nvpair-node responder exited", "err", err)
 			}
@@ -363,6 +448,28 @@ func (d *daemon) run(ctx context.Context) {
 		// the responder keeps its A records live (both via netmon).
 		go d.watchAddress(ctx)
 	}
+
+	// Common cleanup, deferred so it runs whichever way the browse loop
+	// below ends. Cancelling ctx makes both ctx.Done() and the browser's
+	// closed events channel ready at the same instant, and select takes
+	// either: with this wait written into the ctx.Done() branch, a select
+	// that happened to take the closed channel returned as soon as the
+	// browser stopped, with responder.Run still inside its shutdown. Only
+	// the responder is joined — it returns once the RFC 6762 §10.1 goodbye
+	// has gone out, and Scanner.Run cannot let the process exit before this
+	// returns. The other background loops are not joined: after
+	// cancellation they hold nothing the wire still needs, and joining them
+	// could outlast the responder send for no retraction benefit.
+	defer func() {
+		if d.modelsClients != nil {
+			d.modelsClients.CloseIdle()
+		}
+		if d.nodeInfoClients != nil {
+			d.nodeInfoClients.CloseIdle()
+		}
+		waitForShutdown(responderDone, shutdownJoinTimeout, "_nvpair-node mDNS responder")
+	}()
+
 	// Publish our own directory entry from the local registry BEFORE the browse
 	// loop runs. Self presence is registry-driven, not browse-driven: on Windows
 	// the host frequently does not loop its own multicast back to the browsing
@@ -382,15 +489,12 @@ func (d *daemon) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			if d.modelsClients != nil {
-				d.modelsClients.CloseIdle()
-			}
-			if d.nodeInfoClients != nil {
-				d.nodeInfoClients.CloseIdle()
-			}
 			return
 		case ev, ok := <-events:
 			if !ok {
+				// The browser has stopped, which it does as ctx is
+				// cancelled. The deferred cleanup above still joins the
+				// responder, whose goodbye may still be going out.
 				return
 			}
 			d.onBrowse(ev)

@@ -20,8 +20,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/grandcat/zeroconf"
-
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
 )
@@ -81,9 +79,11 @@ func TestScanner_EvictsRecordSupersededAtItsAddress(t *testing.T) {
 		"ip=127.0.0.1",
 		fmt.Sprintf("%s=%d", noderec.ServiceNodeInfo, niPort),
 	}
-	responder, err := zeroconf.Register(peerInstance, noderec.ServiceType, testDomain, noderec.SRVPort, txt, nil)
-	require.NoError(t, err, "register peer")
+	responder := registerTestAdvertisement(t, peerInstance, noderec.ServiceType, testHostSix, noderec.SRVPort, txt)
 	responderDown := false
+	// Safety net for an early return; the normal path shuts the responder down
+	// deliberately below, and the helper's own cleanup is then a no-op because
+	// grandcat's Shutdown is idempotent.
 	defer func() {
 		if !responderDown {
 			responder.Shutdown()

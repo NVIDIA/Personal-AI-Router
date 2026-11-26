@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"time"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
@@ -63,9 +64,47 @@ func (s *Scanner) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to send ready notification: %w", err)
 	}
 
-	go s.daemon.run(ctx)
+	daemonDone := make(chan struct{})
+	go func() {
+		defer close(daemonDone)
+		s.daemon.run(ctx)
+	}()
 
-	return s.readLoop(ctx)
+	err := s.readLoop(ctx)
+	// The daemon's mDNS responder sends its RFC 6762 §10.1 shutdown
+	// retraction only after ctx is cancelled, and readLoop's stdin-EOF
+	// return path is exactly such a moment with ctx still live (the broker
+	// vanished; nothing cancelled us). Cancel explicitly — the kept
+	// defer cancel() would only run after this wait, and the daemon's join
+	// would deadlock on a context nobody cancels — then wait for the daemon
+	// so the retraction has left the machine before Run returns and main
+	// may exit.
+	cancel()
+	waitForShutdown(daemonDone, shutdownJoinTimeout, "discovery daemon")
+	return err
+}
+
+// shutdownJoinTimeout bounds the waits Scanner.Run and daemon.run take for
+// the mDNS responder's shutdown retraction to finish. A send is one small
+// multicast per interface, so the timeout only fires when a socket send
+// itself stalls; dropping the retraction is then the price of a bounded
+// shutdown, which beats hanging the broker's wait forever.
+const shutdownJoinTimeout = 2 * time.Second
+
+// waitForShutdown waits for done to close, bounded by timeout. A nil done
+// means the responder is disabled and there is nothing to wait for. The
+// timeout logs at Warn because the cost of giving up is every peer holding
+// our dead node's records until the record TTL expires.
+func waitForShutdown(done <-chan struct{}, timeout time.Duration, what string) {
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		slog.Warn("shutdown wait gave up before component returned",
+			"component", what, "timeout", timeout)
+	}
 }
 
 func (s *Scanner) readLoop(ctx context.Context) error {
