@@ -170,9 +170,14 @@ one centralized pending-action layer so controls respond immediately while
 waiting for authoritative state. Pending state clears on matching engine state,
 progress, or error pushes.
 
-Local engine operations include install, start, stop, uninstall, update, port
-changes, and model actions. Remote cluster operations use the engine manager's
-remote control surface where supported.
+Local engine operations include install, start, stop, uninstall, port changes,
+and model actions. The desktop calls `engine:check-updates` at startup and every
+six hours for each installed local engine. A local start or stop also triggers
+a background check for that engine. The bridge projects each successful result into
+`updateAvailable` for the renderer. For a paired node, the desktop requests
+`engine:remote-check-updates` with the node and engine. Selecting **Update**
+sends `engine:update` locally or `engine:remote-update` to the peer. The
+selected node determines ownership and runs its own updater.
 
 ### Cancelling a download
 

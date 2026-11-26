@@ -7,10 +7,11 @@ import { DialogHeader } from './DialogHeader'
 import { errorDismissalKey } from '@/ui/utils/error-modal-dismissal'
 import { InlineErrorBanner } from './InlineErrorBanner'
 import { useErrorsStore } from '@/ui/stores/errors.store'
+import { useConnectionStore } from '@/ui/stores/connection.store'
+import { useEngineUpdateAvailableStore } from '@/ui/stores/engine-update-available.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { isEngineType } from '@/shared/utils/engines'
 import type { ServiceError } from '@/shared/types/errors'
-import type { NodeItem } from '@/shared/types/nodes'
 
 interface ErrorModalFilter {
     nodeId?: string
@@ -34,6 +35,7 @@ interface ErrorModalFilter {
 export function ErrorModal({ filter }: { filter?: ErrorModalFilter }) {
     const errors = useErrorsStore(state => state.errors)
     const clearError = useErrorsStore(state => state.clearError)
+    const selfId = useConnectionStore(state => state.selfId)
     const [dismissedKey, setDismissedKey] = useState<string | null>(null)
 
     const matched = useMemo(() => {
@@ -46,11 +48,21 @@ export function ErrorModal({ filter }: { filter?: ErrorModalFilter }) {
 
     const matchedKey = useMemo(() => errorDismissalKey(matched), [matched])
 
+    const clear = useCallback(
+        (error: ServiceError) => {
+            // The peer's engine manager owns its update errors. errors.clear(id)
+            // addresses this node and could clear its own error with the same ID.
+            if (error.operation === 'update' && error.nodeId && error.nodeId !== selfId) return
+            clearError(error.id)
+        },
+        [clearError, selfId]
+    )
+
     const handleDismiss = useCallback(() => {
         if (matchedKey === dismissedKey) return
         setDismissedKey(matchedKey)
-        matched.forEach(err => clearError(err.id))
-    }, [clearError, dismissedKey, matched, matchedKey])
+        matched.forEach(clear)
+    }, [clear, dismissedKey, matched, matchedKey])
 
     if (matched.length === 0) return null
 
@@ -70,7 +82,7 @@ export function ErrorModal({ filter }: { filter?: ErrorModalFilter }) {
                             <ErrorBanner
                                 key={`${err.nodeId ?? ''}/${err.id}`}
                                 error={err}
-                                onClear={clearError}
+                                onClear={clear}
                                 hideNodePrefix={filter?.nodeId === err.nodeId}
                             />
                         ))}
@@ -99,7 +111,7 @@ function bannerStatus(severity: ServiceError['severity']): 'info' | 'warning' | 
  * `null` (no button) when the action isn't `retry` or the error lacks the
  * engine/node/model context needed to re-dispatch.
  */
-function buildRetry(error: ServiceError): (() => void) | null {
+function buildRetry(error: ServiceError, canUpdate: boolean): (() => void) | null {
     if (error.action !== 'retry') return null
     const { engineType, nodeId, operation, modelName } = error
     if (!engineType || !isEngineType(engineType) || !nodeId) return null
@@ -107,6 +119,8 @@ function buildRetry(error: ServiceError): (() => void) | null {
     switch (operation) {
         case 'install':
             return () => engines.install(engineType, nodeId)
+        case 'update':
+            return canUpdate ? () => engines.update(engineType, nodeId) : null
         case 'uninstall':
             return () => engines.uninstall(engineType, nodeId)
         case 'start':
@@ -116,13 +130,6 @@ function buildRetry(error: ServiceError): (() => void) | null {
         default:
             return null
     }
-}
-
-function resolveNodeLabel(nodes: Map<string, NodeItem>, nodeId: string): string | null {
-    const node = nodes.get(nodeId)
-    if (node?.name) return node.name
-    if (node?.ipAddress) return node.ipAddress
-    return null
 }
 
 function nodeErrorPrefix(severity: ServiceError['severity'], nodeLabel: string | null): string {
@@ -154,16 +161,24 @@ function ErrorBanner({
     hideNodePrefix
 }: {
     error: ServiceError
-    onClear: (id: string) => void
+    onClear: (error: ServiceError) => void
     hideNodePrefix: boolean
 }) {
-    const nodeLabel = useNodesStore(state =>
-        error.nodeId ? resolveNodeLabel(state.nodes, error.nodeId) : null
-    )
+    const node = useNodesStore(state => (error.nodeId ? state.nodes.get(error.nodeId) : undefined))
+    const nodeLabel = node?.name || node?.ipAddress || null
     const showNodePrefix = Boolean(error.nodeId) && !hideNodePrefix
     const displayMessage = formatErrorMessage(error, nodeLabel, showNodePrefix)
     const severity = bannerStatus(error.severity)
-    const retry = buildRetry(error)
+    const isLocalNode = useConnectionStore(state => state.selfId === error.nodeId)
+    const hasManagedUpdate = useEngineUpdateAvailableStore(state =>
+        error.operation === 'update' &&
+        error.nodeId &&
+        error.engineType &&
+        isEngineType(error.engineType)
+            ? state.getInfo(error.nodeId, error.engineType)?.installType === 'managed'
+            : false
+    )
+    const retry = buildRetry(error, isLocalNode || (node?.status === 'active' && hasManagedUpdate))
 
     return (
         <InlineErrorBanner severity={severity} message={displayMessage}>
@@ -172,7 +187,7 @@ function ErrorBanner({
                     kind="primary"
                     size="small"
                     onClick={() => {
-                        onClear(error.id)
+                        onClear(error)
                         retry()
                     }}
                 >

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,8 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -61,6 +64,23 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		e.reportInstallFailed(engine, err)
 		return err
 	}
+	if st.bundledInstall != nil {
+		if err := os.MkdirAll(filepath.Dir(st.installDir), 0o755); err != nil {
+			return err
+		}
+		guard, err := lockEngineInstall(st.installDir)
+		if err != nil {
+			e.reportInstallFailed(engine, err)
+			return err
+		}
+		defer guard.Close()
+		// Another manager may have completed installation since detection.
+		if found, _ := e.Detect(engine); found {
+			e.reporter.clear(installFailedID(engine))
+			e.emitInstallProgress(engine, "already-installed", 100)
+			return nil
+		}
+	}
 	if err := os.MkdirAll(st.installDir, 0o755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
 	}
@@ -85,44 +105,9 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			e.reportInstallFailed(engine, werr)
 			return werr
 		}
-	} else {
-		if inst.Fetch != nil {
-			e.emitInstallProgress(engine, "downloading", 0)
-			dp, err := e.download(ctx, engine, inst.Fetch)
-			if err != nil {
-				e.reportInstallFailed(engine, err)
-				return err
-			}
-			defer os.Remove(dp)
-			vars["download"] = dp
-			e.emitInstallProgress(engine, "verified", 0)
-		}
-		if len(inst.Artifacts) > 0 {
-			paths, artifactVars, err := e.downloadInstallArtifacts(ctx, engine, inst.Artifacts)
-			defer removeDownloadedFiles(paths)
-			if err != nil {
-				e.reportInstallFailed(engine, err)
-				return err
-			}
-			maps.Copy(vars, artifactVars)
-			e.emitInstallProgress(engine, "verified", 50)
-		}
-		if len(inst.Run) > 0 {
-			e.emitInstallProgress(engine, "installing", 0)
-			args, err := resolveArgs(inst.Run, vars)
-			if err != nil {
-				e.reportInstallFailed(engine, err)
-				return err
-			}
-			for i := range args {
-				args[i] = expandPath(args[i])
-			}
-			if err := e.runCommandWithEnv(ctx, args, installCommandEnv(vars, inst.Artifacts)); err != nil {
-				werr := fmt.Errorf("install command failed: %w", err)
-				e.reportInstallFailed(engine, werr)
-				return werr
-			}
-		}
+	} else if err := e.installArchives(ctx, engine, inst, vars); err != nil {
+		e.reportInstallFailed(engine, err)
+		return err
 	}
 
 	if !e.waitDetect(engine, true, e.detectTimeout) {
@@ -141,6 +126,47 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	return nil
 }
 
+func (e *Executor) installArchives(ctx context.Context, engine string, inst *Install, vars map[string]string) error {
+	if inst.Fetch != nil {
+		e.emitInstallProgress(engine, "downloading", 0)
+		dp, err := e.download(ctx, engine, inst.Fetch)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(dp)
+		vars["download"] = dp
+		e.emitInstallProgress(engine, "verified", 0)
+	}
+	if len(inst.Artifacts) > 0 {
+		paths, artifactVars, err := e.downloadInstallArtifacts(ctx, engine, inst.Artifacts)
+		defer removeDownloadedFiles(paths)
+		if err != nil {
+			return err
+		}
+		maps.Copy(vars, artifactVars)
+		e.emitInstallProgress(engine, "verified", 50)
+	}
+	if len(inst.Run) == 0 {
+		return nil
+	}
+	e.emitInstallProgress(engine, "installing", 0)
+	return e.runInstallCommand(ctx, inst, vars)
+}
+
+func (e *Executor) runInstallCommand(ctx context.Context, inst *Install, vars map[string]string, installLock ...*os.File) error {
+	args, err := resolveArgs(inst.Run, vars)
+	if err != nil {
+		return err
+	}
+	for i := range args {
+		args[i] = expandPath(args[i])
+	}
+	if err := runManifestCommand(ctx, args, installCommandEnv(vars, inst.Artifacts), installLock...); err != nil {
+		return fmt.Errorf("install command failed: %w", err)
+	}
+	return nil
+}
+
 // Uninstall runs the manifest's uninstall command (user-mode), stopping
 // the engine first. No-op if the engine isn't currently detected.
 func (e *Executor) Uninstall(ctx context.Context, engine string) error {
@@ -150,6 +176,22 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	}
 	st.lockOperation()
 	defer st.unlockOperation()
+	if st.bundledInstall != nil {
+		guard, err := lockEngineInstall(st.installDir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if guard != nil {
+			defer guard.Close()
+		}
+	}
+	if st.bundledInstall != nil && (engine == "ollama" || engine == "llamacpp" || engine == "vllm") {
+		// An interrupted update can leave both the promoted installation and
+		// its backup. Explicit removal must retire that recovery path too.
+		if err := discardEngineUpdateBackup(st.installDir, engine); err != nil {
+			return err
+		}
+	}
 	if ok, _ := e.Detect(engine); !ok {
 		// Already gone — by its own uninstaller, or by hand. Drop our ownership
 		// claim with it: left behind, it would authorise removing a copy the
@@ -432,14 +474,10 @@ func (e *Executor) runCommand(ctx context.Context, argv []string) error {
 	return runManifestCommand(ctx, argv, nil)
 }
 
-func (e *Executor) runCommandWithEnv(ctx context.Context, argv []string, environment map[string]string) error {
-	return runManifestCommand(ctx, argv, environment)
-}
-
 // runManifestCommand is independent of any Executor so the standalone
 // --uninstall-managed pass can run a manifest's uninstall command without
 // building the service's full runtime.
-func runManifestCommand(ctx context.Context, argv []string, environment map[string]string) error {
+func runManifestCommand(ctx context.Context, argv []string, environment map[string]string, installLock ...*os.File) error {
 	if len(argv) == 0 {
 		return nil
 	}
@@ -451,6 +489,12 @@ func runManifestCommand(ctx context.Context, argv []string, environment map[stri
 		}
 	}
 	configureSysProcAttr(cmd) // hide the console window on Windows
+	if len(installLock) != 0 && runtime.GOOS != "windows" {
+		// Hold the update lock in the installer too. A replacement manager
+		// must wait for an orphaned installer before restoring the old venv.
+		cmd.ExtraFiles = installLock
+	}
+	cmd.Cancel = func() error { return signalPID(cmd.Process.Pid, true) }
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))

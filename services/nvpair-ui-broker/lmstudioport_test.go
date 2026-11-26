@@ -308,10 +308,13 @@ func TestLMStudioRequests_WaitForPortGate(t *testing.T) {
 func TestLMStudioPortGate_MatchesRequestsThatRequireStablePorts(t *testing.T) {
 	test := func(name, method, params string, want bool) {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, want, needsLMStudioPortGate(method, json.RawMessage(params)))
+			assert.Equal(t, want, needsEnginePortGate("lmstudio", method, json.RawMessage(params)))
 		})
 	}
 	test("inventory waits", "engine:get-installed", `{}`, true)
+	test("LM Studio update check waits", "engine:check-updates", `{"engine":"lmstudio"}`, true)
+	test("LM Studio update waits", "engine:update", `{"engine":"lmstudio"}`, true)
+	test("Ollama update check does not wait", "engine:check-updates", `{"engine":"ollama"}`, false)
 	test("LM Studio status waits", "engine:status", `{"engine":"lmstudio"}`, true)
 	test("LM Studio start waits", "engine:start", `{"engine":"lmstudio"}`, true)
 	test("LM Studio restart waits", "engine:restart", `{"engine":"lmstudio"}`, true)

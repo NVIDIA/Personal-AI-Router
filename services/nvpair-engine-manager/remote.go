@@ -441,6 +441,9 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message, order remoteOrder
 		m.codec.RespondError(msg.ID, -32602, "node is required")
 		return
 	}
+	if (msg.Method == "engine:remote-check-updates" || msg.Method == "engine:remote-update") && !m.validUpdateEngine(msg, p.Engine) {
+		return
+	}
 	peer, ok := m.peers.lookup(p.Node)
 	if !ok {
 		m.codec.RespondError(msg.ID, -32000, "node "+p.Node+" is not a discovered ec peer")
@@ -457,14 +460,29 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message, order remoteOrder
 		res, err := client.getEngines(ctx)
 		m.respondOrErr(msg, res, err)
 
-	case "engine:remote-install":
+	case "engine:remote-check-updates":
+		ctx, cancel := context.WithTimeout(ctx, remoteResponseHeaderTimeout)
+		defer cancel()
+		data, err := client.postJSON(ctx, controlCheckUpdatesPath, p.Engine, engineUpdateRequest{Engine: p.Engine})
+		var result engineUpdateResult
+		if err == nil {
+			err = json.Unmarshal(data, &result)
+		}
+		m.respondOrErr(msg, result, err)
+
+	case "engine:remote-install", "engine:remote-update":
 		if p.Engine == "" {
 			m.codec.RespondError(msg.ID, -32602, "engine is required")
 			return
 		}
 		opID := newOpID()
-		body := installRequest{OpID: opID, Engine: p.Engine, Start: p.Start}
-		terminal, err := client.stream(ctx, controlInstallPath, body, m.remoteProgressFn(opID, peer.nodeID), nil)
+		path := controlInstallPath
+		var body any = installRequest{OpID: opID, Engine: p.Engine, Start: p.Start}
+		if msg.Method == "engine:remote-update" {
+			path = controlUpdatePath
+			body = engineUpdateRequest{OpID: opID, Engine: p.Engine}
+		}
+		terminal, err := client.stream(ctx, path, body, m.remoteProgressFn(opID, peer.nodeID), nil)
 		if err != nil {
 			m.codec.RespondError(msg.ID, -32000, err.Error())
 			return

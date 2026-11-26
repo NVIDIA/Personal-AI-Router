@@ -8,6 +8,7 @@ import type {
     EngineProgress,
     EngineStatusData,
     EngineType,
+    EngineUpdateAvailable,
     ModelItem
 } from '@/shared/types/engines'
 import type { LogEntry, LogPage } from '@/shared/types/log'
@@ -66,21 +67,27 @@ interface EnginePresence {
 }
 
 /**
- * Authoritative install/run facts for a remote peer's engine, read from that
- * peer's cluster-scoped `ec` control surface via `engine:remote-get-installed`
- * (pin-based mTLS). Unlike {@link EnginePresence} — which is inferred from mDNS
- * proxy advertisement and can only ever say "up/down" — these are the peer
- * engine-manager's own truth: whether it is installed, whether it is running,
- * and the configured server port (present even while stopped). Only available
- * for clustered, reachable peers; when absent we fall back to presence.
+ * Installed and running state reported by the node's engine manager, locally
+ * or through a pinned peer's control surface.
  */
-interface RemoteEngineFacts {
+interface EngineManagerFacts {
     installed: boolean
     running: boolean
     starting: boolean
     awaitingModel: boolean
     healthy: boolean
     port: number
+}
+
+function engineManagerFacts(obj: JsonObject): EngineManagerFacts {
+    return {
+        installed: booleanValue(obj.installed),
+        running: booleanValue(obj.running),
+        starting: booleanValue(obj.starting),
+        awaitingModel: booleanValue(obj.awaiting_model),
+        healthy: booleanValue(obj.healthy),
+        port: numberValue(obj.port)
+    }
 }
 
 /**
@@ -252,6 +259,13 @@ function objectValue(value: JsonValue | undefined): JsonObject | null {
 
 function stringValue(value: JsonValue | undefined): string {
     return typeof value === 'string' ? value : ''
+}
+
+/** The local engine manager selects the vendor URLs for this installation. */
+function updateLink(value: JsonValue | undefined): string | undefined {
+    if (typeof value !== 'string' || !URL.canParse(value)) return undefined
+    const url = new URL(value)
+    return url.protocol === 'https:' && !url.username && !url.password ? url.href : undefined
 }
 
 function numberValue(value: JsonValue | undefined): number {
@@ -957,22 +971,16 @@ class ModularBridgeState {
         vllm: 0
     }
     private selfId: string | null = null
+    private engineUpdates = new Map<string, EngineUpdateAvailable>()
+    private refreshEngineUpdates?: (engineType?: EngineType, nodeId?: string) => void
+    private clusterPeerIds: ReadonlySet<string> = new Set()
     /**
      * Authoritative local-engine facts from `nvpair-engine-manager`, keyed by
      * engine type. Stored independent of `selfId` because engine-manager
      * reports before the self node is discovered, then resolved against
      * `selfId` at emit time.
      */
-    private engineManagerFacts = new Map<
-        EngineType,
-        {
-            installed: boolean
-            running: boolean
-            starting: boolean
-            awaitingModel: boolean
-            port: number
-        }
-    >()
+    private engineManagerFacts = new Map<EngineType, EngineManagerFacts>()
     /**
      * The engines `nvpair-engine-manager` lists for this host. It leaves out an
      * engine the host cannot run, such as vLLM on Windows, which is then
@@ -1048,7 +1056,7 @@ class ModularBridgeState {
      * failed poll — see `refreshRemoteEngineStatus`. Dropped when the node is
      * evicted.
      */
-    private remoteEngineFacts = new Map<string, RemoteEngineFacts>()
+    private remoteEngineFacts = new Map<string, EngineManagerFacts>()
     /** The engines each peer's engine manager lists, as {@link localEngineList} is for this host. */
     private remoteEngineLists = new Map<string, ReadonlySet<EngineType>>()
     /**
@@ -1135,8 +1143,98 @@ class ModularBridgeState {
     setSelfId(nodeUuid: string): void {
         const trimmed = nodeUuid.trim()
         if (!trimmed || this.selfId === trimmed) return
+        this.clearEngineUpdates()
         this.selfId = trimmed
         emitBridgePush('state:request-refresh', undefined)
+        this.refreshEngineUpdates?.()
+    }
+
+    getClusterPeerIds(): ReadonlySet<string> {
+        return this.clusterPeerIds
+    }
+
+    setClusterPeerIds(peers: ReadonlySet<string>): void {
+        const previous = this.clusterPeerIds
+        this.clusterPeerIds = peers
+        for (const peer of previous) {
+            if (!peers.has(peer)) this.dropRemoteEngineFacts(peer)
+        }
+        for (const peer of peers) {
+            if (!previous.has(peer)) this.dropRemoteEngineFacts(peer)
+        }
+    }
+
+    canCheckEngineUpdate(nodeId: string, engine: EngineType): boolean {
+        if (!this.selfId) return false
+        if (nodeId === this.selfId) return this.localEngineList?.has(engine) ?? false
+        return (
+            this.clusterPeerIds.has(nodeId) &&
+            this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engine))?.installed === true
+        )
+    }
+
+    setEngineUpdateRefresher(refresh?: (engineType?: EngineType, nodeId?: string) => void): void {
+        this.refreshEngineUpdates = refresh
+    }
+
+    clearEngineUpdates(): void {
+        for (const update of this.engineUpdates.values()) {
+            this.clearEngineUpdate(update.nodeId, update.engineType)
+        }
+    }
+
+    private clearEngineUpdate(nodeId: string | null, engineType: EngineType): void {
+        if (!nodeId || !this.engineUpdates.delete(this.remoteOpKey(nodeId, engineType))) return
+        emitBridgePush('engines:state-changed', {
+            nodeId,
+            engineType,
+            updateAvailable: null
+        })
+    }
+
+    applyEngineUpdateCheck(
+        nodeId: string,
+        engineType: EngineType,
+        result: JsonValue | undefined
+    ): void {
+        if (!this.canCheckEngineUpdate(nodeId, engineType)) return
+        const value = objectValue(result)?.updateAvailable
+        if (value === null) {
+            this.clearEngineUpdate(nodeId, engineType)
+            return
+        }
+        const info = objectValue(value)
+        if (!info) return
+        const currentVersion = stringValue(info.currentVersion)
+        const latestVersion = stringValue(info.latestVersion)
+        const releaseUrl = updateLink(info.releaseUrl)
+        const downloadUrl = updateLink(info.downloadUrl)
+        const installType = info.installType
+        if (!currentVersion || !latestVersion || !releaseUrl) return
+        if (info.downloadUrl !== undefined && !downloadUrl) return
+        const release = { nodeId, engineType, currentVersion, latestVersion, releaseUrl }
+        let update: EngineUpdateAvailable
+        if (installType === 'external' && downloadUrl) {
+            update = { ...release, installType, downloadUrl }
+        } else if (installType === 'managed') {
+            update = { ...release, installType, ...(downloadUrl && { downloadUrl }) }
+        } else return
+        const key = this.remoteOpKey(nodeId, engineType)
+        const previous = this.engineUpdates.get(key)
+        if (
+            previous?.currentVersion === currentVersion &&
+            previous.latestVersion === latestVersion &&
+            previous.releaseUrl === releaseUrl &&
+            previous.downloadUrl === downloadUrl &&
+            previous.installType === installType
+        )
+            return
+        this.engineUpdates.set(key, update)
+        emitBridgePush('engines:state-changed', {
+            nodeId,
+            engineType,
+            updateAvailable: update
+        })
     }
 
     /** Bound proxy port for an engine reported by the broker, or null if unknown. */
@@ -1205,7 +1303,7 @@ class ModularBridgeState {
             statuses,
             models,
             activeProgress: Array.from(this.activePulls.values()),
-            updateAvailable: []
+            updateAvailable: Array.from(this.engineUpdates.values())
         }
     }
 
@@ -1262,10 +1360,12 @@ class ModularBridgeState {
 
     /** Local fallback upsert used only when `nvpair-errors` is not running. */
     upsertError(error: ServiceError): void {
-        this.errors = [error, ...this.errors.filter(existing => existing.id !== error.id)].slice(
-            0,
-            200
-        )
+        this.errors = [
+            error,
+            ...this.errors.filter(
+                existing => existing.nodeId !== error.nodeId || existing.id !== error.id
+            )
+        ].slice(0, 200)
         emitBridgePush('errors:update', [...this.errors])
     }
 
@@ -1370,15 +1470,19 @@ class ModularBridgeState {
         if (!Array.isArray(list)) return
         const listed = new Set<EngineType>()
         for (const entry of list) {
-            this.applyEngineManagerStatus(entry)
             const engineType = engineTypeFromManagerName(stringValue(objectValue(entry)?.engine))
             if (engineType) listed.add(engineType)
         }
         // An empty listing says nothing about what the host can run.
         if (listed.size === 0) return
         this.localEngineList = listed
+        for (const entry of list) this.applyEngineManagerStatus(entry)
         for (const engineType of EngineTypes) {
-            if (!listed.has(engineType)) this.emitLocalEngineStatus(engineType)
+            if (!listed.has(engineType)) {
+                this.engineManagerFacts.delete(engineType)
+                this.clearEngineUpdate(this.selfId, engineType)
+                this.emitLocalEngineStatus(engineType)
+            }
         }
     }
 
@@ -1393,19 +1497,33 @@ class ModularBridgeState {
         const engineType = engineTypeFromManagerName(stringValue(obj.engine))
         if (!engineType) return
 
-        this.engineManagerFacts.set(engineType, {
-            installed: booleanValue(obj.installed),
-            running: booleanValue(obj.running),
-            starting: booleanValue(obj.starting),
-            awaitingModel: booleanValue(obj.awaiting_model),
-            port: numberValue(obj.port)
-        })
+        const previous = this.engineManagerFacts.get(engineType)
+        const facts = engineManagerFacts(obj)
+        this.engineManagerFacts.set(engineType, facts)
         // A fresh authoritative state is the resolution of whatever op was in
         // flight (start/stop done, install `done`+installed, uninstall removed).
         // Drop the optimistic status without re-emitting here — the emit below
         // already carries the resolved, fact-derived status.
         this.discardPendingOp(engineType)
         this.emitLocalEngineStatus(engineType)
+        this.refreshAfterEngineState(this.selfId, engineType, previous, facts)
+    }
+
+    private refreshAfterEngineState(
+        nodeId: string | null,
+        engineType: EngineType,
+        previous: EngineManagerFacts | undefined,
+        facts: EngineManagerFacts
+    ): void {
+        if (!nodeId) return
+        // Enabling vLLM can leave it awaiting a model without a serving process.
+        const lifecycleChanged =
+            !facts.starting &&
+            (facts.running !== previous?.running || facts.awaitingModel !== previous?.awaitingModel)
+        if (facts.installed !== previous?.installed || lifecycleChanged) {
+            if (!facts.installed) this.clearEngineUpdate(nodeId, engineType)
+            this.refreshEngineUpdates?.(engineType, nodeId)
+        }
     }
 
     /**
@@ -1427,10 +1545,16 @@ class ModularBridgeState {
      * `errors:report` that carries no `engine:state-changed` (LM Studio
      * start-command failure, uninstall failure, install failure). Called by the
      * supervisor's error demux. `operation` is the engine-manager error's
-     * `operation` field (`start` | `install` | `uninstall`).
+     * `operation` field (`start` | `install` | `uninstall` | `update`).
      */
     failLocalEngineOp(engineManagerEngine: string, operation: string): void {
-        if (operation !== 'start' && operation !== 'install' && operation !== 'uninstall') return
+        if (
+            operation !== 'start' &&
+            operation !== 'install' &&
+            operation !== 'uninstall' &&
+            operation !== 'update'
+        )
+            return
         const engineType =
             engineTypeFromManagerName(engineManagerEngine) ??
             (isEngineType(engineManagerEngine) ? engineManagerEngine : null)
@@ -1803,14 +1927,7 @@ class ModularBridgeState {
             if (!engineObj) continue
             const engineType = engineTypeFromManagerName(stringValue(engineObj.engine))
             if (!engineType || !isProxyEngine(engineType)) continue
-            this.remoteEngineFacts.set(this.remoteOpKey(nodeId, engineType), {
-                installed: booleanValue(engineObj.installed),
-                running: booleanValue(engineObj.running),
-                starting: booleanValue(engineObj.starting),
-                awaitingModel: booleanValue(engineObj.awaiting_model),
-                healthy: booleanValue(engineObj.healthy),
-                port: numberValue(engineObj.port)
-            })
+            this.recordRemoteEngineStatus(nodeId, engineType, engineObj)
             seen.add(engineType)
         }
         // A peer leaves out an engine it cannot run. An empty listing says nothing.
@@ -1818,6 +1935,7 @@ class ModularBridgeState {
         for (const engine of PROXY_ENGINES) {
             if (!seen.has(engine)) {
                 this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
+                this.clearEngineUpdate(nodeId, engine)
             }
             this.emitRemoteEngineStatus(nodeId, engine)
         }
@@ -1836,15 +1954,21 @@ class ModularBridgeState {
         if (!isProxyEngine(engineType)) return
         const obj = objectValue(result)
         if (!obj) return
-        this.remoteEngineFacts.set(this.remoteOpKey(nodeId, engineType), {
-            installed: booleanValue(obj.installed),
-            running: booleanValue(obj.running),
-            starting: booleanValue(obj.starting),
-            awaitingModel: booleanValue(obj.awaiting_model),
-            healthy: booleanValue(obj.healthy),
-            port: numberValue(obj.port)
-        })
+        this.recordRemoteEngineStatus(nodeId, engineType, obj)
         this.emitRemoteEngineStatus(nodeId, engineType)
+    }
+
+    private recordRemoteEngineStatus(nodeId: string, engine: EngineType, obj: JsonObject): void {
+        const key = this.remoteOpKey(nodeId, engine)
+        const previous = this.remoteEngineFacts.get(key)
+        const facts = engineManagerFacts(obj)
+        this.remoteEngineFacts.set(key, facts)
+        this.refreshAfterEngineState(nodeId, engine, previous, facts)
+    }
+
+    finishRemoteEngineUpdate(nodeId: string, engine: EngineType): void {
+        this.clearEngineUpdate(nodeId, engine)
+        this.refreshEngineUpdates?.(engine, nodeId)
     }
 
     /** Forget a node's authoritative remote-engine facts (on eviction/leave). */
@@ -1852,6 +1976,7 @@ class ModularBridgeState {
         this.remoteEngineLists.delete(nodeId)
         for (const engine of PROXY_ENGINES) {
             this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
+            this.clearEngineUpdate(nodeId, engine)
         }
     }
 
@@ -2176,6 +2301,10 @@ class ModularBridgeState {
         //   done / already-installed -> success, failed -> error (percent -1).
         // On any terminal stage we clear the ephemeral progress entry.
         if (stage === 'done' || stage === 'already-installed' || stage === 'failed') {
+            if (stage !== 'failed') {
+                if (stage === 'done') this.clearEngineUpdate(nodeId, engineType)
+                this.refreshEngineUpdates?.(engineType)
+            }
             emitBridgePush('engines:progress-cleared', {
                 key: `${nodeId}:${engineType}:install`
             })

@@ -3650,7 +3650,7 @@ func (b *Broker) relayToEngineInOrder(msg *Message) {
 }
 
 func (b *Broker) relayToEngineNow(msg *Message) {
-	if needsOllamaPortGate(msg.Method, msg.Params) && b.ollamaFacadeIsPendingBackend() {
+	if b.ollamaFacadeIsPendingBackend() && needsEnginePortGate(engines.NameOllama, msg.Method, msg.Params) {
 		go func() {
 			select {
 			case <-b.ollamaPortReady:
@@ -3667,7 +3667,7 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 		}()
 		return
 	}
-	if needsLMStudioPortGate(msg.Method, msg.Params) && b.lmstudioPortOwnershipPending() {
+	if b.lmstudioPortOwnershipPending() && needsEnginePortGate(engines.NameLMStudio, msg.Method, msg.Params) {
 		go func() {
 			select {
 			case <-b.lmstudioPortReady:

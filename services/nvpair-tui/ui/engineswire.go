@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"nvpair-shared/engines"
 	"nvpair-tui/rpc"
@@ -65,10 +66,11 @@ type engineOp struct {
 
 // engineOps are the lifecycle operations, keyed by the local method name. The
 // remote variants take a node and cover a deliberately smaller set: the manager
-// has remote install/start/stop but no remote restart, uninstall, or port
+// has remote install/update/start/stop but no remote restart, uninstall, or port
 // change, because those need process ownership on the target host.
 var engineOps = map[string]engineOp{
 	"install":   {method: "engine:install", what: "install"},
+	"update":    {method: "engine:update", what: "update"},
 	"start":     {method: "engine:start", what: "start"},
 	"stop":      {method: "engine:stop", what: "stop"},
 	"restart":   {method: "engine:restart", what: "restart", localOnly: true},
@@ -77,9 +79,11 @@ var engineOps = map[string]engineOp{
 
 // remoteEngineMethods maps a local lifecycle method to its remote counterpart.
 var remoteEngineMethods = map[string]string{
-	"engine:install": "engine:remote-install",
-	"engine:start":   "engine:remote-start",
-	"engine:stop":    "engine:remote-stop",
+	"engine:update":        "engine:remote-update",
+	"engine:check-updates": "engine:remote-check-updates",
+	"engine:install":       "engine:remote-install",
+	"engine:start":         "engine:remote-start",
+	"engine:stop":          "engine:remote-stop",
 }
 
 // modelAction is one model operation: the remote method that performs it on a
@@ -230,21 +234,24 @@ type engineOpMsg struct {
 // machine and uses the local method; otherwise the remote counterpart is used
 // and the node travels in the params.
 func engineCmd(client *rpc.Client, node, engine, method, op, what string) tea.Cmd {
+	return callEngine(client, node, engine, method, callTimeout, func(_ *rpc.Message, err error) tea.Msg {
+		return classifyOpResult(what, engine, op, err)
+	})
+}
+
+func callEngine(client *rpc.Client, node, engine, method string, budget time.Duration, decode func(*rpc.Message, error) tea.Msg) tea.Cmd {
 	params := map[string]any{"engine": engine}
 	if node != "" {
 		remote, ok := remoteEngineMethods[method]
 		if !ok {
 			return func() tea.Msg {
-				return engineOpMsg{what: what, engine: engine,
-					err: errors.New("not supported on a remote node")}
+				return decode(nil, errors.New("not supported on a remote node"))
 			}
 		}
 		method = remote
 		params["node"] = node
 	}
-	return call(client, method, params, func(_ *rpc.Message, err error) tea.Msg {
-		return classifyOpResult(what, engine, op, err)
-	})
+	return callWithin(client, budget, method, params, decode)
 }
 
 // modelRequest is the method and params of a model operation against a node:
@@ -435,6 +442,7 @@ var longRunningOps = map[string]bool{
 	"pull":      true,
 	"load":      true,
 	"install":   true,
+	"update":    true,
 	"uninstall": true,
 	"start":     true,
 	"restart":   true,

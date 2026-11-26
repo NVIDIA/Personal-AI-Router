@@ -4,12 +4,8 @@
 /**
  * Engine update-available store -- ephemeral, push-driven.
  *
- * Sole owner of per-engine "update available" state in the renderer. The
- * backend reports an available engine update per node and delivers it as an
- * `engines:state-changed` push patch scoped to the originating `nodeId`. We
- * mirror those into a `Map<{nodeId, engineType}, UpdateAvailableInfo>` so
- * `EditNodeApp` can surface update affordances for any node — local **or**
- * remote — that the user has access to.
+ * Seeds Engine settings from the bridge snapshot and applies subsequent
+ * `engines:state-changed` patches for the same node and engine type.
  *
  * Entries are cleared on an explicit `updateAvailable: null` patch and when a
  * node departs (`nodes:remove`), so a rejoin never resurfaces a stale update
@@ -18,15 +14,14 @@
  */
 import { create } from 'zustand'
 import type { EngineInitialState } from '@/shared/types/engine-api'
-import type { UpdateAvailableInfo } from '@/ui/types/engine-info'
-import type { EngineType } from '@/shared/types/engines'
+import type { EngineType, EngineUpdateAvailable } from '@/shared/types/engines'
 
 function key(nodeId: string, engineType: string): string {
     return `${nodeId}:${engineType}`
 }
 
 interface EngineUpdateAvailableState {
-    entries: Map<string, UpdateAvailableInfo>
+    entries: Map<string, EngineUpdateAvailable>
     initialize(initial?: EngineInitialState): Promise<void>
     cleanup(): void
     /**
@@ -34,7 +29,7 @@ interface EngineUpdateAvailableState {
      * none is currently published. Returning `undefined` lets callers spread
      * directly into `BackendInfo` without sentinel handling.
      */
-    getInfo(nodeId: string, engineType: EngineType): UpdateAvailableInfo | undefined
+    getInfo(nodeId: string, engineType: EngineType): EngineUpdateAvailable | undefined
 }
 
 let unsubs: Array<() => void> = []
@@ -49,14 +44,9 @@ export const useEngineUpdateAvailableStore = create<EngineUpdateAvailableState>(
         unsubs = []
         try {
             const initial = initialSnapshot ?? (await window.pairApi.engines.getInitialState())
-            const map = new Map<string, UpdateAvailableInfo>()
+            const map = new Map<string, EngineUpdateAvailable>()
             for (const update of initial.updateAvailable) {
-                map.set(key(update.nodeId, update.engineType), {
-                    currentVersion: update.currentVersion,
-                    latestVersion: update.latestVersion,
-                    releaseUrl: update.releaseUrl,
-                    installType: update.installType
-                })
+                map.set(key(update.nodeId, update.engineType), update)
             }
             set({ entries: map })
         } catch {
@@ -74,12 +64,7 @@ export const useEngineUpdateAvailableStore = create<EngineUpdateAvailableState>(
                     }
                     return
                 }
-                map.set(key(patch.nodeId, patch.engineType), {
-                    currentVersion: patch.updateAvailable.currentVersion,
-                    latestVersion: patch.updateAvailable.latestVersion,
-                    releaseUrl: patch.updateAvailable.releaseUrl,
-                    installType: patch.updateAvailable.installType
-                })
+                map.set(key(patch.nodeId, patch.engineType), patch.updateAvailable)
                 set({ entries: map })
             }),
             // Drop a departed node's update entries so a rejoin never resurfaces a

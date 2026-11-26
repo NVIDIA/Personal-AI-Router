@@ -6,7 +6,6 @@ import { Stack } from '@nvidia/foundations-react-core'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
-import { useEngineUpdateAvailableStore } from '@/ui/stores/engine-update-available.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import {
@@ -29,7 +28,7 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
     const selfId = useConnectionStore(state => state.selfId)
 
     // The fingerprints below subscribe to the engine stores so this component
-    // re-renders when the underlying status/models/update data changes. The
+    // re-renders when the underlying status or model data changes. The
     // actual data is read from the stores via getState() in the map below.
     const engineFingerprint = useEngineStatusStore(state => {
         const nodeStatuses = state.statusByNode.get(nodeId)
@@ -42,15 +41,6 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
         }
         return parts.join('|')
     })
-    const updateAvailableFingerprint = useEngineUpdateAvailableStore(state => {
-        const parts: string[] = []
-        for (const [k, v] of state.entries) {
-            if (!k.startsWith(`${nodeId}:`)) continue
-            parts.push(`${k}:${v.currentVersion}->${v.latestVersion}:${v.installType}`)
-        }
-        return parts.join('|')
-    })
-    void updateAvailableFingerprint
     const modelsFingerprint = useEngineModelsStore(state => {
         let fp = ''
         for (const type of EnabledEngineTypes) {
@@ -89,7 +79,6 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
         // without this flag a never-reported remote engine spins forever.
         const statusKnown = statusStore.statusByNode.get(nodeId)?.has(type) ?? false
         const models = useEngineModelsStore.getState().getModels(nodeId, type)
-        const updateAvailable = useEngineUpdateAvailableStore.getState().getInfo(nodeId, type)
 
         return {
             backend: {
@@ -103,8 +92,7 @@ export default function NodeEngineSettings({ nodeId }: { nodeId: string }) {
                 modelsKnown: models.inventoryKnown,
                 docsUrl: EngineDefaultLinks[type]?.docsUrl,
                 installUrl: EngineDefaultLinks[type]?.installUrl,
-                installedVersion: status.installedVersion,
-                updateAvailable
+                installedVersion: status.installedVersion
             },
             statusKnown
         }

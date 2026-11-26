@@ -94,7 +94,10 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 
 - `getInitialState()` returns engine statuses, models, active progress, and available
   updates.
-- `toggle`, `install`, `uninstall`, and `update` manage engine lifecycle.
+- `toggle`, `install`, and `uninstall` manage engine lifecycle. `update` applies
+  an available release to a PAIR-managed engine on the selected local or
+  paired node. For an external installation, the engine row links to the
+  vendor instructions or release reported by that node.
 - `pullModel`, `cancelModelPull`, `loadModel`, `unloadModel`, `deleteModel`, and
   `setModelExpiry` manage models.
 - `searchHub(engineType, nodeId)` returns the curated model catalog for a

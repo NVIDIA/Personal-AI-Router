@@ -27,10 +27,13 @@ export function AppMessageModal({
     onClose: () => void
 }) {
     const openSettings = useOverviewUiStore(s => s.openSettings)
+    const focusNodeEngineSettings = useOverviewUiStore(s => s.focusNodeEngineSettings)
 
     const handleAction = (): void => {
         if (message.action === 'open-update' || message.action === 'open-service') {
             openSettings('service')
+        } else if (message.action?.type === 'open-engine-settings') {
+            focusNodeEngineSettings(message.action.nodeId)
         }
         onClose()
     }

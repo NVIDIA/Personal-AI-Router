@@ -273,6 +273,7 @@ between with `h` / `l`:
 | Key | Action |
 | --- | --- |
 | `i` | Install |
+| `U` (Shift+U) | Apply an available managed update on the selected machine |
 | `s` | Start |
 | `x` | Stop |
 | `r` | Restart (this machine only) |
@@ -280,6 +281,17 @@ between with `h` / `l`:
 | `e` | Change the engine port |
 | `p` | Change the proxy port |
 | `a` | Edit the startup arguments |
+
+An engine row shows when an update is available. Select it to see the installed
+and available versions. For a PAIR-managed engine, press `U` to start the update
+immediately. For an externally managed engine, follow the displayed vendor link
+on the machine where the engine is installed. A paired machine checks its own
+installation and runs its own update.
+
+The terminal checks installed engines when you open the node, after an engine
+starts or stops, and every six hours while the node stays open. Checks fail
+quietly when the release service is unreachable. Set `NVPAIR_NO_UPDATE_CHECK=1`
+to disable these background checks.
 
 Each engine has two ports, and they are easy to confuse:
 
@@ -448,8 +460,8 @@ time you run it.
 
 Nothing is reported when the check cannot reach the network, because an
 unreachable feed is not news. To stop it checking at all, set `NVPAIR_NO_UPDATE_CHECK=1`
-before starting `nvpair`. A copy you build yourself with `go build` never
-checks. One built with `services/build.sh` or `services/build.bat` does, because
+before starting `nvpair`. A copy you build yourself with `go build` skips the
+PAIR release check. One built with `services/build.sh` or `services/build.bat` checks, because
 those scripts record the release number in it.
 
 ## Look at Errors and Logs

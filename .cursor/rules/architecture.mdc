@@ -69,6 +69,9 @@ The binary inventory and launch ownership live in
 `nvpair-engine-manager` owns lifecycle and model operations.
 
 - Engine server ports and proxy ports are persisted by their backend owners.
+- The engine manager on the selected node identifies the installed version,
+  selects the release, and applies managed updates. The desktop and TUI use
+  the engine manager's paired-peer control surface for remote engines.
 - Desired engine state is restored by the backend.
 - Leave shutdown ordering to the broker. Its shutdown stops the proxy, then the
   engines through `engine:prepare-shutdown`, then the workers. Clients do not

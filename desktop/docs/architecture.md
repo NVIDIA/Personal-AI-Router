@@ -208,6 +208,12 @@ closed `EngineType` union and narrows external strings with `isEngineType()`.
 `engineManagerName()` / `engineTypeFromManagerName()` are the one place that
 translation to and from the engine manager's own spelling lives.
 
+Each node's engine manager compares versions, determines installation
+ownership, and applies managed updates. For a paired node the desktop requests
+the check or update through the peer control surface. The bridge publishes
+availability by node and engine through the engine snapshot and
+`engines:state-changed` updates.
+
 ### Model downloads
 
 A download is started with `engine:action{pull_model}`, or

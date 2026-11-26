@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +39,15 @@ import (
 
 	"nvpair-shared/jsonrpc"
 )
+
+func announceEnginePeer(t *testing.T, stdin io.Writer, uuid string, port int) {
+	t.Helper()
+	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
+		`{"hostUuid":%q,"name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
+		`"identityVerification":"pinned","discoveryRecordId":"peer-b",`+
+		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuid, uuid, port)
+	writeRawFrame(t, stdin, snapshot)
+}
 
 // mintClusterIdentity writes a self-signed cluster leaf (node.crt + node.key)
 // for uuid into dir and returns the certificate PEM (for cross-pinning).
@@ -121,11 +131,7 @@ func TestRemoteEngine_ReturnsInstalledEnginesForPeer(t *testing.T) {
 	// Seed A's ec peer directory with node B. handleMessage processes this
 	// synchronously before the next frame, so the directory is populated by the
 	// time the remote request is read.
-	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
-		`{"hostUuid":%q,"name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
-		`"identityVerification":"pinned","discoveryRecordId":"peer-b",`+
-		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, uuidB, portB)
-	writeRawFrame(t, aStdin, snapshot)
+	announceEnginePeer(t, aStdin, uuidB, portB)
 
 	// Fire the remote read and await the response.
 	writeRawFrame(t, aStdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":%q}}`, uuidB))
@@ -162,17 +168,62 @@ func TestRemoteEngine_RejectsUntrusted(t *testing.T) {
 	t.Cleanup(aCleanup)
 	waitForMethod(t, aMsgs, "engine:ready", 10*time.Second)
 
-	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
-		`{"hostUuid":%q,"name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
-		`"identityVerification":"pinned","discoveryRecordId":"peer-b",`+
-		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, uuidB, portB)
-	writeRawFrame(t, aStdin, snapshot)
-	writeRawFrame(t, aStdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":%q}}`, uuidB))
+	announceEnginePeer(t, aStdin, uuidB, portB)
+	for _, method := range []string{"engine:remote-get-installed", "engine:remote-check-updates", "engine:remote-update"} {
+		t.Run(method, func(t *testing.T) {
+			resp := callRPC(t, aStdin, aMsgs, method, map[string]string{"node": uuidB, "engine": "ollama"}, 10*time.Second)
+			require.NotNil(t, resp.Error)
+			assert.Contains(t, resp.Error.Message, "HTTP 403")
+		})
+	}
+}
 
-	resp := waitForResponse(t, aMsgs, 15*time.Second)
-	require.NotNil(t, resp.Error, "expected an error from an unpinned caller, got result")
-	require.Contains(t, resp.Error.Message, "HTTP 403", "the discovered peer must reject the caller at its pin gate")
-	t.Logf("unpinned caller correctly refused: %+v", resp.Error)
+func TestRemoteEngineUpdate_UsesTheSelectedPeersInstallation(t *testing.T) {
+	controllerDir, targetDir := t.TempDir(), t.TempDir()
+	const controller, target = "update-controller", "update-target"
+	controllerCert := mintClusterIdentity(t, controllerDir, controller)
+	targetCert := mintClusterIdentity(t, targetDir, target)
+	writePin(t, targetDir, controller, controllerCert)
+	writePin(t, controllerDir, target, targetCert)
+
+	targetHome := t.TempDir()
+	externalBinary := filepath.Join(targetHome, "external-ollama.exe")
+	ports := freePorts(t, 2)
+	writeUserManifest(t, targetHome, map[string]any{
+		"engine": "ollama",
+		"platforms": map[string]any{runtime.GOOS + "/" + runtime.GOARCH: map[string]any{
+			"detect": []string{externalBinary}, "install": nil,
+			"runtime": map[string]any{"port": ports[1]},
+		}},
+	})
+	_, stopTarget := startEngineManagerServer(t, targetDir, ports[0], "HOME="+targetHome, "USERPROFILE="+targetHome,
+		"LOCALAPPDATA="+targetHome, "APPDATA="+targetHome, "XDG_CONFIG_HOME="+targetHome)
+	t.Cleanup(stopTarget)
+	waitForPort(t, "127.0.0.1", ports[0], 10*time.Second)
+	stdin, messages, stopController := startEngineManagerStdio(t, controllerDir)
+	t.Cleanup(stopController)
+	waitForMethod(t, messages, "engine:ready", 10*time.Second)
+	announceEnginePeer(t, stdin, target, ports[0])
+
+	params := map[string]string{"node": target, "engine": "ollama"}
+	check := callRPC(t, stdin, messages, "engine:remote-check-updates", params, 10*time.Second)
+	require.Nil(t, check.Error)
+	assert.JSONEq(t, `{"updateAvailable":null}`, string(check.Result))
+
+	// Only the target sees this file. Its invalid contents make the version
+	// lookup fail locally before it could contact a release provider.
+	externalContents := []byte("invalid executable")
+	require.NoError(t, os.WriteFile(externalBinary, externalContents, 0o600))
+	check = callRPC(t, stdin, messages, "engine:remote-check-updates", params, 10*time.Second)
+	require.NotNil(t, check.Error)
+	assert.Contains(t, check.Error.Message, "read installed Ollama version")
+
+	update := callRPC(t, stdin, messages, "engine:remote-update", params, 10*time.Second)
+	require.NotNil(t, update.Error)
+	assert.Contains(t, update.Error.Message, "PAIR-managed Ollama installation")
+	contentsAfterUpdate, err := os.ReadFile(externalBinary)
+	require.NoError(t, err)
+	assert.Equal(t, externalContents, contentsAfterUpdate)
 }
 
 // engine:remote-cancel-pull goes from node A to node B across the same
