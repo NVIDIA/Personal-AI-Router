@@ -21,6 +21,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/engines"
 	"nvpair-shared/errors"
 	"nvpair-shared/noderec"
 )
@@ -70,7 +71,8 @@ type NodeInfoResponse struct {
 // probes always use HTTPS with current cluster
 // pins and our client certificate, regardless of TLSPort or MTLS. MTLS is an
 // informational configuration flag echoed in status, not a transport switch.
-// The separate Ollama and LM Studio engine probes use plain HTTP.
+// Unpaired endpoints use plain HTTP engine probes; after a peer is
+// authenticated, its model inventory is read over pinned mTLS.
 type ManualEntry struct {
 	Address string `json:"address"`
 	Name    string `json:"name"`
@@ -202,8 +204,9 @@ type Manager struct {
 	codec  *Codec
 	cancel context.CancelFunc
 
-	// client probes Ollama and LM Studio over plain HTTP. Fresh connections
-	// let hostname entries recover after their remote address changes.
+	// client probes unpaired Ollama and LM Studio endpoints over plain HTTP.
+	// Fresh connections let hostname entries recover after their remote address
+	// changes.
 	client *http.Client
 
 	// mesh supplies current membership, our client certificate, and exact
@@ -223,13 +226,21 @@ type Manager struct {
 	// first port), so manual entries follow a --port-base shift; standalone
 	// runs keep the canonical 14318.
 	defaultNodeInfoPort int
+	// engineManagerPort is derived from the same service-block base and serves
+	// the peer's complete model inventory over pinned mTLS.
+	engineManagerPort int
 }
 
 func NewManager(codec *Codec, mesh *clustertrust.Mesh, defaultNodeInfoPort int) *Manager {
+	engineManagerPort, ok := noderec.ServicePort(defaultNodeInfoPort, noderec.ServiceEngineManager)
+	if !ok {
+		panic("engine-manager is not part of the PAIR service block")
+	}
 	return &Manager{
 		codec:               codec,
 		mesh:                mesh,
 		defaultNodeInfoPort: defaultNodeInfoPort,
+		engineManagerPort:   engineManagerPort,
 		peerClients:         clustertrust.NewPeerClientPool(mesh, probeTimeout),
 		client: &http.Client{
 			Timeout:   probeTimeout,
@@ -482,6 +493,16 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		}
 		nodeInfoUp, info = m.probeNodeInfo(client, addr, nodeInfoPort, localRecordID)
 	}
+	// Manual HTTP engine probes are useful for unpaired endpoints, but a paired
+	// peer restricts model inventory to its pinned mTLS surface. Once node-info
+	// has authenticated the endpoint, read that same peer inventory so a routed
+	// subnet does not need plaintext access to the inference ports.
+	if nodeInfoUp {
+		if models, ok := m.probePeerModels(addr, info.HostUUID); ok {
+			ollamaModels, ollamaUp = models[engines.NameOllama]
+			lmStudioModels, lmStudioUp = models[engines.NameLMStudio]
+		}
+	}
 	m.peerClients.DropUnpinned()
 
 	newStatus := ManualNodeStatus{
@@ -594,6 +615,52 @@ func (m *Manager) probeNode(entry ManualEntry) {
 			log.Printf("failed to send errors:clear for %s: %v", id, err)
 		}
 	}
+}
+
+// probePeerModels reads the engine-manager inventory from a peer already
+// authenticated by probeNodeInfo. The mTLS client and response certificate
+// must still match the peer's current pin before the models are accepted.
+func (m *Manager) probePeerModels(addr, hostUUID string) (map[string][]string, bool) {
+	m.mesh.Refresh()
+	client, ok := m.peerClients.Client(hostUUID)
+	if !ok {
+		return nil, false
+	}
+	url := "https://" + net.JoinHostPort(addr, strconv.Itoa(m.engineManagerPort)) + "/v1/models"
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, false
+	}
+	// Manual hostnames are resolved on every probe. Reusing a connection here
+	// could keep reading from the previous address after a DNS reassignment.
+	request.Close = true
+	resp, err := client.Do(request)
+	if err != nil {
+		slog.Debug("manual peer model inventory failed", "addr", addr, "host_uuid", hostUUID, "err", err)
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		slog.Debug("manual peer model inventory non-OK", "addr", addr, "host_uuid", hostUUID, "status", resp.StatusCode)
+		return nil, false
+	}
+	var result struct {
+		ModelsByEngine map[string][]string `json:"modelsByEngine"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxModelResponseBytes)).Decode(&result); err != nil {
+		slog.Debug("manual peer model inventory decode failed", "addr", addr, "host_uuid", hostUUID, "err", err)
+		return nil, false
+	}
+	if result.ModelsByEngine == nil {
+		// Older peers may only expose the flat union. Keep the explicitly
+		// configured HTTP probe results until both sides support per-engine data.
+		return nil, false
+	}
+	m.mesh.Refresh()
+	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 || !m.mesh.VerifyPeerCertificate(hostUUID, resp.TLS.PeerCertificates[0]) {
+		return nil, false
+	}
+	return result.ModelsByEngine, true
 }
 
 // probeFailedID is the canonical ServiceError id for a manual node
