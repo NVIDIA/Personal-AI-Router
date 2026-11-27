@@ -197,17 +197,18 @@ Notifications emitted: `ready` with `{ "version": string }` (once, before the pr
 
 ### 7.2 Probe protocol and reachability
 
-Each probe cycle performs up to four HTTP GETs against the entered address, each bounded by `probeTimeout` (3 s). Engine probes disable keep-alives so each cycle re-resolves the address. Hardware reads use the transport in §7.3:
+Each probe cycle performs up to five HTTP GETs against the entered address, each bounded by `probeTimeout` (3 s). Direct engine probes disable keep-alives so each cycle re-resolves the address. Hardware and paired-peer inventory reads use the transports in §7.3:
 
 - Ollama: `GET http://<address>:11434/` must return `200`; on success `GET http://<address>:11434/api/tags` supplies `ollama_models` from `models[].name`.
 - LM Studio: `GET http://<address>:1234/v1/models` must return `200`; the same response supplies `lmstudio_models` from `data[].id`.
 - node-info: `GET https://<address>:<port>/v1/node-info` must return `200`, fit within 64 KiB, and decode into `NodeInfoResponse`. Require an exact current pin, matching host and cluster response identities, and a remote identity distinct from this host.
+- Paired-peer inventory: after node-info proves the host, `GET https://<address>:<engine-manager-port>/v1/models` must return `200`, fit within 16 MiB, and present the same pinned peer certificate. `modelsByEngine` is authoritative for `ollama` and `lmstudio`; a missing engine key means that engine is not serving a model inventory.
 
 Ollama and LM Studio model-list JSON decoders read at most 16 MiB. A JSON value
 that extends past this limit follows the existing model-parse failure path.
 Hardware decoding requires the complete response body to fit within 64 KiB.
 
-`node_info_port` defaults to the manager's `--node-info-port` (`14318` standalone; the broker hands it its resolved `ni` port) unless `tls_port > 0` overrides it. Service hardware reads always use pinned mTLS. Engine legs remain explicitly configured plain HTTP. `reachable` is `ollama_up || lmstudio_up || node_info_up`, independent of public previews. Publish changed status and every accepted hardware snapshot so stable values do not stop refreshing the scheduling cache.
+`node_info_port` defaults to the manager's `--node-info-port` (`14318` standalone; the broker hands it its resolved `ni` port) unless `tls_port > 0` overrides it. The engine-manager port is derived from the same service-block base. Service hardware and authenticated model inventory reads use pinned mTLS. Direct engine probes remain available for unpaired manual endpoints; a valid per-engine inventory from a paired peer supersedes them. `reachable` is `ollama_up || lmstudio_up || node_info_up`, independent of public previews. Publish changed status and every accepted hardware snapshot so stable values do not stop refreshing the scheduling cache.
 
 ### 7.3 Probe transport and authenticated identity
 

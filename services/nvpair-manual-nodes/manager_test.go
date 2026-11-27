@@ -528,6 +528,7 @@ type manualPeerFixture struct {
 	frames         *captureRW
 	entry          ManualEntry
 	info           NodeInfoResponse
+	modelsByEngine map[string][]string
 	server         *httptest.Server
 	beforeResponse func()
 	respond        func(http.ResponseWriter)
@@ -571,6 +572,10 @@ func newManualPeerFixture(t *testing.T) *manualPeerFixture {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		if r.URL.Path == "/v1/models" {
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"modelsByEngine": f.modelsByEngine}))
+			return
+		}
 		if f.beforeResponse != nil {
 			f.beforeResponse()
 		}
@@ -592,6 +597,7 @@ func newManualPeerFixture(t *testing.T) *manualPeerFixture {
 		Name:    "manual-peer",
 		TLSPort: portNumber,
 	}
+	manager.engineManagerPort = portNumber
 	manager.nodes[nodeID(f.entry)] = &trackedNode{entry: f.entry}
 	return f
 }
@@ -733,6 +739,37 @@ func TestProbeNode_AcceptsMeasurementsFromPinnedPeer(t *testing.T) {
 	assert.GreaterOrEqual(t, status[0].MSSince, int64(137))
 }
 
+func TestProbeNode_UsesPinnedPeerInventoryForManualModels(t *testing.T) {
+	f := newManualPeerFixture(t)
+	f.modelsByEngine = map[string][]string{
+		"ollama":   {"llama3.2:latest"},
+		"lmstudio": {"qwen3-8b"},
+	}
+
+	f.manager.probeNode(f.entry)
+
+	status := f.manager.listNodes()
+	require.Len(t, status, 1)
+	assert.True(t, status[0].NodeInfoUp)
+	assert.True(t, status[0].OllamaUp)
+	assert.Equal(t, []string{"llama3.2:latest"}, status[0].OllamaModels)
+	assert.True(t, status[0].LMStudioUp)
+	assert.Equal(t, []string{"qwen3-8b"}, status[0].LMStudioModels)
+}
+
+func TestProbeNode_ReportsRunningEngineWithEmptyPinnedInventory(t *testing.T) {
+	f := newManualPeerFixture(t)
+	f.modelsByEngine = map[string][]string{"ollama": {}}
+
+	f.manager.probeNode(f.entry)
+
+	status := f.manager.listNodes()
+	require.Len(t, status, 1)
+	assert.True(t, status[0].OllamaUp, "a present empty inventory means the engine is running")
+	assert.Empty(t, status[0].OllamaModels)
+	assert.False(t, status[0].LMStudioUp, "a missing engine key means it is not serving")
+}
+
 func TestProbeNode_DiscardsOldIdentityAfterHostnameReassignment(t *testing.T) {
 	f := newManualPeerFixture(t)
 	f.manager.probeNode(f.entry)
@@ -790,7 +827,7 @@ func TestProbeNode_DiscardsOldIdentityAfterHostnameReassignment(t *testing.T) {
 	assert.Empty(t, status[0].GPUs)
 	assert.False(t, status[0].TelemetryValid)
 	targetMu.Lock()
-	assert.Equal(t, []string{f.server.Listener.Addr().String(), replacement.Listener.Addr().String()}, dialed)
+	assert.Equal(t, []string{f.server.Listener.Addr().String(), f.server.Listener.Addr().String(), replacement.Listener.Addr().String()}, dialed)
 	targetMu.Unlock()
 }
 
@@ -915,6 +952,7 @@ func TestManager_DefaultNodeInfoPort_FlowsIntoStatusAndPreview(t *testing.T) {
 
 	status := m.addNode(ManualEntry{Address: "192.0.2.30", Name: "shifted"})
 	assert.Equal(t, shiftedPort, status.NodeInfoPort, "bare entry status port")
+	assert.Equal(t, shiftedPort+4, m.engineManagerPort, "engine-manager model port")
 	assert.False(t, status.TLSEnabled, "the default port is not a TLS hint")
 
 	t.Run("explicit tls_port still outranks the default", func(t *testing.T) {
